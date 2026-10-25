@@ -7,14 +7,6 @@ import streamlit as st
 import streamlit.components.v1 as components
 import requests
 
-# Native HTML Auto-Refresh every 5 seconds (Requires zero external packages!)
-st.markdown(
-    """
-    <meta http-equiv="refresh" content="5">
-    """,
-    unsafe_allow_html=True
-)
-
 IST = timezone(timedelta(hours=5, minutes=30))
 
 st.set_page_config(
@@ -26,10 +18,10 @@ st.set_page_config(
 DB_PATH = os.getenv("BRODAX_DB_PATH", "brodax_crypto_bot.db")
 
 CRYPTO_SYMBOLS = {
-    "Bitcoin (BTC/USD)": {"coincap_id": "bitcoin", "tv": "BINANCE:BTCUSDT", "lot": 0.01, "default_p": 81000.0},
-    "Ethereum (ETH/USD)": {"coincap_id": "ethereum", "tv": "BINANCE:ETHUSDT", "lot": 0.1, "default_p": 2400.0},
-    "Solana (SOL/USD)": {"coincap_id": "solana", "tv": "BINANCE:SOLUSDT", "lot": 1.0, "default_p": 180.0},
-    "Ripple (XRP/USD)": {"coincap_id": "ripple", "tv": "BINANCE:XRPUSDT", "lot": 10.0, "default_p": 2.5}
+    "Bitcoin (BTC/USD)": {"cc_sym": "BTC", "tv": "BINANCE:BTCUSDT", "lot": 0.01, "default_p": 81000.0},
+    "Ethereum (ETH/USD)": {"cc_sym": "ETH", "tv": "BINANCE:ETHUSDT", "lot": 0.1, "default_p": 2400.0},
+    "Solana (SOL/USD)": {"cc_sym": "SOL", "tv": "BINANCE:SOLUSDT", "lot": 1.0, "default_p": 180.0},
+    "Ripple (XRP/USD)": {"cc_sym": "XRP", "tv": "BINANCE:XRPUSDT", "lot": 10.0, "default_p": 2.5}
 }
 
 INTERVALS = {
@@ -96,10 +88,11 @@ def get_market_data(symbol_key, interval_key, limit=50):
     
     current_price = info["default_p"]
     try:
-        price_resp = requests.get(f"https://api.coincap.io/v2/assets/{info['coincap_id']}", timeout=4)
-        price_data = price_resp.json()
-        if "data" in price_data and "priceUsd" in price_data["data"]:
-            current_price = float(price_data["data"]["priceUsd"])
+        url = f"https://min-api.cryptocompare.com/data/price?fsym={info['cc_sym']}&tsyms=USD"
+        resp = requests.get(url, timeout=4)
+        data = resp.json()
+        if "USD" in data:
+            current_price = float(data["USD"])
     except Exception:
         pass
 
@@ -110,7 +103,7 @@ def get_market_data(symbol_key, interval_key, limit=50):
     df['low'] = current_price * 0.998
     df['close'] = current_price
     df['datetime_ist'] = df.index.tz_convert(IST)
-    return df[['open', 'high', 'low', 'close', 'datetime_ist']], "CoinCap Cloud Live Feed"
+    return df[['open', 'high', 'low', 'close', 'datetime_ist']], "CryptoCompare Live Feed"
 
 def evaluate_brodax_smc_strategy(df):
     if df.empty or len(df) < 5:
@@ -244,19 +237,20 @@ def check_auto_exit_conditions(con, current_price, timeframe_label):
             close_single_trade(con, tid, exit_p, reason=reason)
 
 st.title("⚡ BRODAX — 24/7 Crypto Institutional Bot")
-st.caption("Auto-Live Feed (5s Refresh) • TP/SL Auto-Hit • SMC Strategy")
+st.caption("CryptoCompare Live Feed • Manual Refresh • SMC Strategy")
 
 con = connect_db()
 
 with st.sidebar:
     st.header("⚙️ Brodax Control Panel")
-    symbol = st.selectbox("Select Crypto Asset", list(CRYPTO_SYMBOLS.key() if hasattr(CRYPTO_SYMBOLS, 'key') else CRYPTO_SYMBOLS.keys()), index=0)
+    symbol = st.selectbox("Select Crypto Asset", list(CRYPTO_SYMBOLS.keys()), index=0)
     timeframe = st.selectbox("Timeframe", list(INTERVALS.keys()), index=1)
     
     default_lot = CRYPTO_SYMBOLS[symbol]["lot"]
     lot_input = st.number_input("Trade Lot Size", min_value=0.001, max_value=50.0, value=default_lot, step=0.01)
     
-    if st.button("🔄 Refresh Now", use_container_width=True):
+    if st.button("🔄 Refresh Feed Now", use_container_width=True):
+        st.toast("Feed refreshed successfully!", icon="🔄")
         st.rerun()
 
     st.markdown("---")
@@ -279,7 +273,7 @@ with st.sidebar:
         con.commit()
         st.rerun()
 
-st.info("🟢 **Crypto Market Status:** 24/7 Live & Auto-Updating (Every 5 seconds)")
+st.info("🟢 **Crypto Market Status:** 24/7 Live (Manual Refresh Mode)")
 df, data_source = get_market_data(symbol, timeframe)
 result = evaluate_brodax_smc_strategy(df)
 current_live_price = float(df.close.iloc[-1]) if not df.empty else CRYPTO_SYMBOLS[symbol]["default_p"]
