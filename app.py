@@ -26,11 +26,11 @@ CRYPTO_SYMBOLS = {
 }
 
 INTERVALS = {
-    "5 min": {"coincap": "m5", "tv": "5", "minutes": 5},
-    "15 min": {"coincap": "m15", "tv": "15", "minutes": 15},
-    "1 hour": {"coincap": "h1", "tv": "60", "minutes": 60},
-    "4 hours": {"coincap": "h2", "tv": "240", "minutes": 240},
-    "1 day": {"coincap": "d1", "tv": "D", "minutes": 1440}
+    "5 min": {"coincap": "m5", "tv": "5", "minutes": 5, "pd_freq": "5min"},
+    "15 min": {"coincap": "m15", "tv": "15", "minutes": 15, "pd_freq": "15min"},
+    "1 hour": {"coincap": "h1", "tv": "60", "minutes": 60, "pd_freq": "1h"},
+    "4 hours": {"coincap": "h2", "tv": "240", "minutes": 240, "pd_freq": "4h"},
+    "1 day": {"coincap": "d1", "tv": "D", "minutes": 1440, "pd_freq": "1D"}
 }
 
 def connect_db():
@@ -87,7 +87,6 @@ def get_market_data(symbol_key, interval_key, limit=100):
     info = CRYPTO_SYMBOLS[symbol_key]
     cfg = INTERVALS[interval_key]
     
-    # Try fetching live asset price first
     current_price = info["default_p"]
     try:
         p_resp = requests.get(f"https://api.coincap.io/v2/assets/{info['coincap_id']}", timeout=5)
@@ -97,7 +96,6 @@ def get_market_data(symbol_key, interval_key, limit=100):
     except Exception:
         pass
 
-    # Try fetching candles from CoinCap with exchange
     url = f"https://api.coincap.io/v2/assets/{info['coincap_id']}/candles"
     params = {"exchange": "binance", "interval": cfg["coincap"]}
     
@@ -117,8 +115,7 @@ def get_market_data(symbol_key, interval_key, limit=100):
     except Exception:
         pass
 
-    # Fallback: Create safe synthetic dataframe anchored around live price so app never crashes
-    dates = pd.date_range(end=datetime.now(timezone.utc), periods=limit, freq=cfg["coincap"].upper().replace('M', 'min').replace('H', 'h').replace('D', 'D'))
+    dates = pd.date_range(end=datetime.now(timezone.utc), periods=limit, freq=cfg["pd_freq"])
     df = pd.DataFrame(index=dates)
     df['open'] = current_price * 0.999
     df['high'] = current_price * 1.002
@@ -424,7 +421,7 @@ else:
 st.divider()
 
 st.subheader("📜 Trade History (Permanent Storage)")
-history_df = pd.read_sql_query("SELECT * FROM brodax_trade_history ORDER BY id DESC LIMIT 50", con)
+history_df =PD_hist = pd.read_sql_query("SELECT * FROM brodax_trade_history ORDER BY id DESC LIMIT 50", con)
 
 if history_df.empty:
     st.info("Abhi tak koi trade history me saved nahi hai.")
