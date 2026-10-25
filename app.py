@@ -19,10 +19,10 @@ st.set_page_config(
 DB_PATH = os.getenv("BRODAX_DB_PATH", "brodax_crypto_bot.db")
 
 CRYPTO_SYMBOLS = {
-    "Bitcoin (BTC/USD)": {"yf": "BTC-USD", "tv": "BINANCE:BTCUSDT", "lot": 0.01, "mult": 1},
-    "Ethereum (ETH/USD)": {"yf": "ETH-USD", "tv": "BINANCE:ETHUSDT", "lot": 0.1, "mult": 1},
-    "Solana (SOL/USD)": {"yf": "SOL-USD", "tv": "BINANCE:SOLUSDT", "lot": 1.0, "mult": 1},
-    "Ripple (XRP/USD)": {"yf": "XRP-USD", "tv": "BINANCE:XRPUSDT", "lot": 10.0, "mult": 1}
+    "Bitcoin (BTC/USD)": {"yf": "BTC-USD", "tv": "BINANCE:BTCUSDT", "lot": 0.01},
+    "Ethereum (ETH/USD)": {"yf": "ETH-USD", "tv": "BINANCE:ETHUSDT", "lot": 0.1},
+    "Solana (SOL/USD)": {"yf": "SOL-USD", "tv": "BINANCE:SOLUSDT", "lot": 1.0},
+    "Ripple (XRP/USD)": {"yf": "XRP-USD", "tv": "BINANCE:XRPUSDT", "lot": 10.0}
 }
 
 INTERVALS = {
@@ -117,40 +117,34 @@ def evaluate_brodax_smc_strategy(df):
     bullish_votes = []
     bearish_votes = []
 
-    # 1. Premium vs Discount Zone
     if last.close < eq_50:
         bullish_votes.append("Discount Zone (Cheap Area - Buy Bias)")
     else:
         bearish_votes.append("Premium Zone (Expensive Area - Sell Bias)")
 
-    # 2. Fair Value Gap (FVG Imbalance)
     if last.low > p_prev.high and prev.close > prev.open:
         bullish_votes.append("Unmitigated Bullish FVG Imbalance")
     elif last.high < p_prev.low and prev.close < prev.open:
         bearish_votes.append("Unmitigated Bearish FVG Imbalance")
 
-    # 3. Supply/Demand Wick Rejections
     if lower_wick >= body * 1.5 and last.close > last.open:
         bullish_votes.append("Demand Zone Strong Wick Rejection")
     elif upper_wick >= body * 1.5 and last.close < last.open:
         bearish_votes.append("Supply Zone Strong Wick Rejection")
 
-    # 4. Candlestick Engulfing Patterns
     if last.close > last.open and prev.close < prev.open and last.open <= prev.close and last.close >= prev.open:
         bullish_votes.append("Bullish Engulfing Pattern")
     elif last.close < last.open and prev.close > prev.open and last.open >= prev.close and last.close <= prev.open:
         bearish_votes.append("Bearish Engulfing Pattern")
 
-    # 5. Structure Breakout/Breakdown
     recent = df.iloc[-21:-1]
     prior_high = float(recent.high.max())
     prior_low = float(recent.low.min())
     if last.close > prior_high:
         bullish_votes.append("Resistance High Breakout")
     elif last.close < prior_low:
-        bearish_votes.append("Support Low Breakdown")
+        bullish_votes.append("Support Low Breakdown")
 
-    # 6. Momentum Bias
     if last.close > last.open:
         bullish_votes.append("Bullish Momentum")
     else:
@@ -167,15 +161,17 @@ def evaluate_brodax_smc_strategy(df):
         bias = "BUY" if last.close >= last.open else "SELL"
 
     current_close = float(last.close)
-    sl_buffer = max(rng * 1.5, current_close * 0.005)
-    tp_buffer = max(rng * 3.0, current_close * 0.010)
-
+    
+    # Dynamic Crypto Percentage-based SL (1.5%) & TP (3.0% for 1:2 R:R)
+    sl_pct = 0.015
+    tp_pct = 0.030
+    
     if bias == "BUY":
-        sl = current_close - sl_buffer
-        tp = current_close + tp_buffer
+        sl = current_close * (1 - sl_pct)
+        tp = current_close * (1 + tp_pct)
     else:
-        sl = current_close + sl_buffer
-        tp = current_close - tp_buffer
+        sl = current_close * (1 + sl_pct)
+        tp = current_close * (1 - tp_pct)
 
     all_votes_str = f"Bullish Confluence [{b_score}]: {', '.join(bullish_votes)} | Bearish Confluence [{s_score}]: {', '.join(bearish_votes)}"
 
@@ -243,9 +239,55 @@ def close_single_trade(con, trade_id, current_price, reason="Manual Close 👤")
     update_balance(con, pnl_usd)
     return pnl_usd
 
+def check_auto_exit_conditions(con, current_price, timeframe_label):
+    cursor = con.cursor()
+    cursor.execute("SELECT id, symbol, timeframe, bias, entry_price, stop_loss, take_profit, lot_size, entry_time_utc FROM brodax_open_trades_v3")
+    open_trades = cursor.fetchall()
+    
+    tf_minutes = INTERVALS[timeframe_label]["minutes"]
+    now_utc = datetime.now(timezone.utc)
+    
+    for tid, symbol, tf, bias, entry, sl, tp, lot, entry_time_str in open_trades:
+        closed = False
+        exit_p = current_price
+        reason = "Manual Close 👤"
+        
+        if bias == "BUY":
+            if current_price >= tp:
+                exit_p = tp
+                reason = "TP Hitter 🎯"
+                closed = True
+            elif current_price <= sl:
+                exit_p = sl
+                reason = "SL Hitter 🛑"
+                closed = True
+        elif bias == "SELL":
+            if current_price <= tp:
+                exit_p = tp
+                reason = "TP Hitter 🎯"
+                closed = True
+            elif current_price >= sl:
+                exit_p = sl
+                reason = "SL Hitter 🛑"
+                closed = True
+                
+        if not closed and tf == timeframe_label:
+            try:
+                entry_dt = datetime.strptime(entry_time_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+                elapsed_mins = (now_utc - entry_dt).total_seconds() / 60.0
+                if elapsed_mins >= tf_minutes:
+                    exit_p = current_price
+                    reason = f"Time Expired ({tf}) ⏱️"
+                    closed = True
+            except Exception:
+                pass
+                
+        if closed:
+            close_single_trade(con, tid, exit_p, reason=reason)
+
 # --- STREAMLIT UI ---
 st.title("⚡ BRODAX — 24/7 Crypto Institutional Bot")
-st.caption("Anti-Duplicate Protection, SMC Strategy Confluence & Permanent SQLite Storage")
+st.caption("TP/SL Auto-Hit, Time Expiry Exit & SMC Strategy Confluence")
 
 con = connect_db()
 
@@ -290,6 +332,9 @@ if not df.empty:
     result = evaluate_brodax_smc_strategy(df)
     current_live_price = float(df.close.iloc[-1])
     current_candle_ts = df.index[-1]
+    
+    # Automatically check TP/SL or time expiry for open trades
+    check_auto_exit_conditions(con, current_live_price, timeframe)
     
     if auto_mode:
         execute_auto_trade(con, symbol, timeframe, result, lot_size=lot_input, candle_ts=current_candle_ts)
@@ -359,8 +404,8 @@ else:
         fmt = ".4f" if row['entry_price'] < 10 else ".2f"
         with st.expander(f"📌 Trade ID #{row['id']} | {row['symbol']} ({row['bias']} - {row['lot_size']} Lot) - TF: {row['timeframe']}"):
             c1, c2 = st.columns(2)
-            c1.markdown(f"🕒 **Entry Time:** `{row['created_at_ist']}`\n📍 **Entry Price:** `${row['entry_price']:{fmt}}`\n🛑 **Stop Loss:** `${row['stop_loss']:{fmt}}`")
-            c2.markdown(f"🎯 **Take Profit:** `${row['take_profit']:{fmt}}`\n⚡ **Status:** `OPEN`\n📊 **Votes:** `{row['strategy_votes']}`")
+            c1.markdown(f"🕒 **Entry Time:** `{row['created_at_ist']}`\n📍 **Entry Price:** `${row['entry_price']:{fmt}}`\n🛑 **Stop Loss:** `{row['stop_loss']:{fmt}}`")
+            c2.markdown(f"🎯 **Take Profit:** `{row['take_profit']:{fmt}}`\n⚡ **Status:** `OPEN`\n📊 **Votes:** `{row['strategy_votes']}`")
             
             if st.button(f"Close Trade #{row['id']} Now", key=f"close_open_{row['id']}"):
                 current_p = float(df.close.iloc[-1]) if not df.empty else row['entry_price']
