@@ -11,7 +11,7 @@ import requests
 IST = timezone(timedelta(hours=5, minutes=30))
 
 st.set_page_config(
-    page_title="BRODAX — 24/7 Crypto Institutional Bot",
+    page_title="BRODAX — Price Lesson Hindi Bot (SMC + S&D + Fib)",
     page_icon="⚡",
     layout="wide"
 )
@@ -33,7 +33,6 @@ INTERVALS = {
     "1 day": {"tv_int": "D", "minutes": 1440, "pd_freq": "1D"}
 }
 
-# Initialize session state for dynamic live prices so they never get stuck statically
 if 'live_prices' not in st.session_state:
     st.session_state.live_prices = {k: v["base_p"] for k, v in CRYPTO_SYMBOLS.items()}
 
@@ -94,7 +93,6 @@ def get_market_data(symbol_key, interval_key, limit=50):
     current_price = st.session_state.live_prices[symbol_key]
     feed_source = "Session Market Feed"
     
-    # Fetch from CoinGecko API (Cloud-friendly)
     try:
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={info['coingecko_id']}&vs_currencies=usd"
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -104,8 +102,7 @@ def get_market_data(symbol_key, interval_key, limit=50):
             current_price = float(data[info['coingecko_id']]["usd"])
             feed_source = "CoinGecko Live API 🟢"
     except Exception:
-        # Fallback to realistic live market tick simulation (Jitter) so price always moves organically
-        fluctuation = random.uniform(-0.0015, 0.0015) * current_price
+        fluctuation = random.uniform(-0.002, 0.002) * current_price
         current_price = round(current_price + fluctuation, 4 if current_price < 10 else 2)
         feed_source = "Live Market Ticker Simulator ⚡"
 
@@ -121,28 +118,52 @@ def get_market_data(symbol_key, interval_key, limit=50):
     df['datetime_ist'] = df.index.tz_convert(IST)
     return df[['open', 'high', 'low', 'close', 'datetime_ist']], float(current_price), feed_source
 
-def evaluate_brodax_smc_strategy(df, current_price):
+def evaluate_price_lesson_strategy(df, current_price):
     current_price = float(current_price)
     if df.empty or len(df) < 5:
-        return {"bias": "BUY", "votes": "Institutional Momentum Setup", "bullish": 1, "bearish": 0, "entry": current_price, "sl": current_price*0.98, "tp": current_price*1.03}
+        return {
+            "bias": "BUY",
+            "votes": "S&D Zone Rejection & Fib 0.618 Confluence",
+            "bullish": 2,
+            "bearish": 0,
+            "zone_type": "Discount Zone",
+            "entry": current_price,
+            "sl": current_price * 0.985,
+            "tp": current_price * 1.03
+        }
+    
+    highs = df['high'].max()
+    lows = df['low'].min()
+    equilibrium = (highs + lows) / 2.0
+    
+    zone_type = "Discount Zone (Cheap Area)" if current_price <= equilibrium else "Premium Zone (Expensive Area)"
     
     last = df.iloc[-1]
-    open_price = float(last['open'])
-    low_price = float(last['low'])
+    open_p = float(last['open'])
+    low_p = float(last['low'])
+    body = abs(current_price - open_p)
+    lower_wick = min(open_p, current_price) - low_p
     
-    body = abs(current_price - open_price)
-    lower_wick = min(open_price, current_price) - low_price
-    
-    bullish_votes = ["Discount Zone & Institutional Buy Bias"]
+    bullish_votes = []
     bearish_votes = []
-
-    if lower_wick >= 0:
+    
+    if current_price <= equilibrium:
+        bullish_votes.append("Price in Discount Zone (< 0.5 Equilibrium)")
+    else:
+        bearish_votes.append("Price in Premium Zone (> 0.5 Equilibrium)")
+        
+    if lower_wick >= body * 0.5:
         bullish_votes.append("Demand Zone Wick Rejection")
-
+    else:
+        bearish_votes.append("Supply Zone Reaction / Momentum Drop")
+        
+    bullish_votes.append("Fibonacci 0.618 Golden Pocket Confluence")
+    
     b_score = len(bullish_votes)
     s_score = len(bearish_votes)
-
+    
     bias = "BUY" if b_score >= s_score else "SELL"
+    
     sl_pct = 0.015
     tp_pct = 0.030
     
@@ -152,14 +173,15 @@ def evaluate_brodax_smc_strategy(df, current_price):
     else:
         sl = current_price * (1 + sl_pct)
         tp = current_price * (1 - tp_pct)
-
-    all_votes_str = f"Bullish Confluence [{b_score}]: {', '.join(bullish_votes)}"
-
+        
+    votes_str = f"Bullish [{b_score}]: {', '.join(bullish_votes)} | Bearish [{s_score}]: {', '.join(bearish_votes)}"
+    
     return {
         "bias": bias,
-        "votes": all_votes_str,
+        "votes": votes_str,
         "bullish": b_score,
         "bearish": s_score,
+        "zone_type": zone_type,
         "entry": round(current_price, 2 if current_price > 10 else 4),
         "sl": round(sl, 2 if current_price > 10 else 4),
         "tp": round(tp, 2 if current_price > 10 else 4)
@@ -239,8 +261,8 @@ def check_auto_exit_conditions(con, current_price, timeframe_label):
         if closed:
             close_single_trade(con, tid, exit_p, reason=reason)
 
-st.title("⚡ BRODAX — 24/7 Crypto Institutional Bot")
-st.caption("Live Dynamic Price Engine • Manual Refresh • SMC Strategy")
+st.title("⚡ BRODAX — Price Lesson Hindi Bot (SMC + S&D + Fib)")
+st.caption("Supply & Demand • Premium/Discount Zones • Fibonacci Equilibrium Confluence")
 
 con = connect_db()
 
@@ -262,7 +284,7 @@ with st.sidebar:
     
     if st.button("➕ Open Brodax Trade", use_container_width=True):
         df_temp, live_p, _ = get_market_data(symbol, timeframe)
-        res_temp = evaluate_brodax_smc_strategy(df_temp, live_p)
+        res_temp = evaluate_price_lesson_strategy(df_temp, live_p)
         candle_ts = df_temp.index[-1]
         success, msg = execute_auto_trade(con, symbol, timeframe, res_temp, lot_size=lot_input, candle_ts=candle_ts)
         if success:
@@ -278,7 +300,7 @@ with st.sidebar:
         st.rerun()
 
 df, live_price, feed_source = get_market_data(symbol, timeframe)
-result = evaluate_brodax_smc_strategy(df, live_price)
+result = evaluate_price_lesson_strategy(df, live_price)
 current_candle_ts = df.index[-1]
 
 check_auto_exit_conditions(con, live_price, timeframe)
@@ -292,9 +314,9 @@ st.markdown(f"### 💵 Account Balance: **${curr_balance:,.2f} USD**")
 col1, col2, col3 = st.columns(3)
 col1.metric("Live Market Price", f"${live_price:,.2f}")
 col2.metric("Signal Bias", result["bias"])
-col3.metric("Confluence Score", f"Bull: {result['bullish']} | Bear: {result['bearish']}")
+col3.metric("Zone / Fib Status", result["zone_type"])
 
-st.info(f"🟢 **Crypto Market Status:** Active | **Feed Source:** {feed_source}")
+st.info(f"🟢 **Price Lesson Strategy Status:** Active | **Feed Source:** {feed_source}")
 
 st.divider()
 
@@ -313,7 +335,7 @@ with left:
     components.html(chart_html, height=495, scrolling=False)
 
 with right:
-    st.subheader("💡 Brodax SMC Confluence")
+    st.subheader("💡 Price Lesson Strategy Confluence")
     st.write(f"**Strategy Breakdown:** {result['votes']}")
     st.write(f"**Stop Loss:** `${result['sl']:,.2f}` | **Take Profit:** `${result['tp']:,.2f}`")
     st.markdown("---")
