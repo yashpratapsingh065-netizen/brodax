@@ -19,18 +19,18 @@ st.set_page_config(
 DB_PATH = os.getenv("BRODAX_DB_PATH", "brodax_crypto_bot.db")
 
 CRYPTO_SYMBOLS = {
-    "Bitcoin (BTC/USD)": {"binance": "BTCUSDT", "tv": "BINANCE:BTCUSDT", "lot": 0.01},
-    "Ethereum (ETH/USD)": {"binance": "ETHUSDT", "tv": "BINANCE:ETHUSDT", "lot": 0.1},
-    "Solana (SOL/USD)": {"binance": "SOLUSDT", "tv": "BINANCE:SOLUSDT", "lot": 1.0},
-    "Ripple (XRP/USD)": {"binance": "XRPUSDT", "tv": "BINANCE:XRPUSDT", "lot": 10.0}
+    "Bitcoin (BTC/USD)": {"coincap": "bitcoin", "tv": "BINANCE:BTCUSDT", "lot": 0.01},
+    "Ethereum (ETH/USD)": {"coincap": "ethereum", "tv": "BINANCE:ETHUSDT", "lot": 0.1},
+    "Solana (SOL/USD)": {"coincap": "solana", "tv": "BINANCE:SOLUSDT", "lot": 1.0},
+    "Ripple (XRP/USD)": {"coincap": "ripple", "tv": "BINANCE:XRPUSDT", "lot": 10.0}
 }
 
 INTERVALS = {
-    "5 min": {"binance": "5m", "tv": "5", "minutes": 5},
-    "15 min": {"binance": "15m", "tv": "15", "minutes": 15},
-    "1 hour": {"binance": "1h", "tv": "60", "minutes": 60},
-    "4 hours": {"binance": "4h", "tv": "240", "minutes": 240},
-    "1 day": {"binance": "1d", "tv": "D", "minutes": 1440}
+    "5 min": {"coincap": "m5", "tv": "5", "minutes": 5},
+    "15 min": {"coincap": "m15", "tv": "15", "minutes": 15},
+    "1 hour": {"coincap": "h1", "tv": "60", "minutes": 60},
+    "4 hours": {"coincap": "h2", "tv": "240", "minutes": 240},
+    "1 day": {"coincap": "d1", "tv": "D", "minutes": 1440}
 }
 
 def connect_db():
@@ -83,33 +83,27 @@ def connect_db():
     con.commit()
     return con
 
-def get_binance_market_data(symbol_key, interval_key, limit=250):
+def get_coincap_market_data(symbol_key, interval_key, limit=250):
     info = CRYPTO_SYMBOLS[symbol_key]
     cfg = INTERVALS[interval_key]
     
-    url = "https://api.binance.com/api/v3/klines"
-    params = {
-        "symbol": info["binance"],
-        "interval": cfg["binance"],
-        "limit": limit
-    }
+    url = f"https://api.coincap.io/v2/assets/{info['coincap']}/candles"
+    params = {"interval": cfg["coincap"]}
     
     try:
-        resp = requests.get(url, params=params, timeout=6)
+        resp = requests.get(url, params=params, timeout=8)
         data = resp.json()
-        if isinstance(data, list) and len(data) > 0:
-            df = pd.DataFrame(data, columns=[
-                'open_time', 'open', 'high', 'low', 'close', 'volume',
-                'close_time', 'quote_asset_volume', 'number_of_trades',
-                'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-            ])
-            for col in ['open', 'high', 'low', 'close']:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            df['datetime'] = pd.to_datetime(df['open_time'], unit='ms', utc=True)
-            df['datetime_ist'] = df['datetime'].dt.tz_convert(IST)
-            df = df.set_index('datetime')
-            return df[['open', 'high', 'low', 'close', 'datetime_ist']], "Binance Direct Live Feed"
+        if "data" in data and isinstance(data["data"], list):
+            df = pd.DataFrame(data["data"])
+            if not df.empty:
+                for col in ['open', 'high', 'low', 'close']:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                
+                df['datetime'] = pd.to_datetime(df['period'], unit='ms', utc=True)
+                df['datetime_ist'] = df['datetime'].dt.tz_convert(IST)
+                df = df.dropna(subset=['open', 'high', 'low', 'close'])
+                df = df.sort_values('datetime').set_index('datetime')
+                return df[['open', 'high', 'low', 'close', 'datetime_ist']].tail(limit), "CoinCap Live Feed"
     except Exception as e:
         pass
         
@@ -304,7 +298,7 @@ def check_auto_exit_conditions(con, current_price, timeframe_label):
 
 # --- STREAMLIT UI ---
 st.title("⚡ BRODAX — 24/7 Crypto Institutional Bot")
-st.caption("Binance Live Feed Sync • TP/SL Auto-Hit • SMC Strategy Confluence")
+st.caption("CoinCap Cloud-Safe Feed • TP/SL Auto-Hit • SMC Strategy Confluence")
 
 con = connect_db()
 
@@ -316,8 +310,8 @@ with st.sidebar:
     default_lot = CRYPTO_SYMBOLS[symbol]["lot"]
     lot_input = st.number_input("Trade Lot Size", min_value=0.001, max_value=50.0, value=default_lot, step=0.01)
     
-    if st.button("🔄 Refresh Binance Feed", use_container_width=True):
-        st.toast("Synced with Binance live price!", icon="🔄")
+    if st.button("🔄 Refresh CoinCap Feed", use_container_width=True):
+        st.toast("Synced with CoinCap live price!", icon="🔄")
         st.rerun()
 
     st.markdown("---")
@@ -325,7 +319,7 @@ with st.sidebar:
     auto_mode = st.toggle("Enable Auto-Pilot Execution", value=False)
     
     if st.button("➕ Open Brodax Trade", use_container_width=True):
-        df_temp, _ = get_binance_market_data(symbol, timeframe)
+        df_temp, _ = get_coincap_market_data(symbol, timeframe)
         if not df_temp.empty:
             res_temp = evaluate_brodax_smc_strategy(df_temp)
             candle_ts = df_temp.index[-1]
@@ -342,8 +336,8 @@ with st.sidebar:
         st.sidebar.success("Balance reset to $500.00!")
         st.rerun()
 
-st.info("🟢 **Crypto Market Status:** 24/7 Live & Active (Synced via Binance API)")
-df, data_source = get_binance_market_data(symbol, timeframe)
+st.info("🟢 **Crypto Market Status:** 24/7 Live & Active (Synced via CoinCap API)")
+df, data_source = get_coincap_market_data(symbol, timeframe)
 
 if not df.empty:
     result = evaluate_brodax_smc_strategy(df)
@@ -361,7 +355,7 @@ if not df.empty:
     
     col1, col2, col3 = st.columns(3)
     fmt = ".4f" if current_live_price < 10 else ".2f"
-    col1.metric("Live Binance Price", f"${current_live_price:{fmt}}")
+    col1.metric("Live CoinCap Price", f"${current_live_price:{fmt}}")
     col2.metric("Signal Bias", result["bias"])
     col3.metric("Confluence Score", f"Bull: {result['bullish']} | Bear: {result['bearish']}")
 
