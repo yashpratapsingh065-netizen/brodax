@@ -11,7 +11,7 @@ import requests
 IST = timezone(timedelta(hours=5, minutes=30))
 
 st.set_page_config(
-    page_title="BRODAX — Price Lesson Hindi Bot (SMC + S&D + Fib)",
+    page_title="BRODAX — Price Lesson Hindi (Bigman2 Style)",
     page_icon="⚡",
     layout="wide"
 )
@@ -118,15 +118,15 @@ def get_market_data(symbol_key, interval_key, limit=50):
     df['datetime_ist'] = df.index.tz_convert(IST)
     return df[['open', 'high', 'low', 'close', 'datetime_ist']], float(current_price), feed_source
 
-def evaluate_price_lesson_strategy(df, current_price):
+def evaluate_bigman2_strategy(df, current_price):
     current_price = float(current_price)
     if df.empty or len(df) < 5:
         return {
             "bias": "BUY",
-            "votes": "S&D Zone Rejection & Fib 0.618 Confluence",
+            "votes": "Demand Zone Rejection + Fib 0.618 Confluence",
             "bullish": 2,
             "bearish": 0,
-            "zone_type": "Discount Zone",
+            "zone_type": "Discount Zone (Below 0.5 Equilibrium)",
             "entry": current_price,
             "sl": current_price * 0.985,
             "tp": current_price * 1.03
@@ -136,32 +136,44 @@ def evaluate_price_lesson_strategy(df, current_price):
     lows = df['low'].min()
     equilibrium = (highs + lows) / 2.0
     
-    zone_type = "Discount Zone (Cheap Area)" if current_price <= equilibrium else "Premium Zone (Expensive Area)"
-    
     last = df.iloc[-1]
     open_p = float(last['open'])
     low_p = float(last['low'])
+    high_p = float(last['high'])
+    
     body = abs(current_price - open_p)
     lower_wick = min(open_p, current_price) - low_p
+    upper_wick = high_p - max(open_p, current_price)
     
     bullish_votes = []
     bearish_votes = []
     
+    # Bigman2 Rule: Discount Zone for BUY, Premium Zone for SELL
     if current_price <= equilibrium:
+        zone_type = "Discount Zone (Cheap Area - Look for BUY)"
         bullish_votes.append("Price in Discount Zone (< 0.5 Equilibrium)")
     else:
+        zone_type = "Premium Zone (Expensive Area - Look for SELL)"
         bearish_votes.append("Price in Premium Zone (> 0.5 Equilibrium)")
         
-    if lower_wick >= body * 0.5:
-        bullish_votes.append("Demand Zone Wick Rejection")
+    # Supply & Demand Wick Rejection Rules
+    if lower_wick >= body * 0.3:
+        bullish_votes.append("Demand Zone Strong Wick Rejection")
+    elif upper_wick >= body * 0.3:
+        bearish_votes.append("Supply Zone Strong Wick Rejection")
     else:
-        bearish_votes.append("Supply Zone Reaction / Momentum Drop")
-        
+        if current_price <= equilibrium:
+            bullish_votes.append("Bullish Momentum Candle Setup")
+        else:
+            bearish_votes.append("Bearish Momentum Candle Setup")
+            
+    # Fibonacci Golden Pocket Confluence
     bullish_votes.append("Fibonacci 0.618 Golden Pocket Confluence")
     
     b_score = len(bullish_votes)
     s_score = len(bearish_votes)
     
+    # Strict Bigman2 Bias Decision
     bias = "BUY" if b_score >= s_score else "SELL"
     
     sl_pct = 0.015
@@ -174,7 +186,7 @@ def evaluate_price_lesson_strategy(df, current_price):
         sl = current_price * (1 + sl_pct)
         tp = current_price * (1 - tp_pct)
         
-    votes_str = f"Bullish [{b_score}]: {', '.join(bullish_votes)} | Bearish [{s_score}]: {', '.join(bearish_votes)}"
+    votes_str = f"Bullish Confluence [{b_score}]: {', '.join(bullish_votes)} | Bearish Confluence [{s_score}]: {', '.join(bearish_votes)}"
     
     return {
         "bias": bias,
@@ -261,7 +273,7 @@ def check_auto_exit_conditions(con, current_price, timeframe_label):
         if closed:
             close_single_trade(con, tid, exit_p, reason=reason)
 
-st.title("⚡ BRODAX — Price Lesson Hindi Bot (SMC + S&D + Fib)")
+st.title("⚡ BRODAX — Price Lesson Hindi (Bigman2 Style)")
 st.caption("Supply & Demand • Premium/Discount Zones • Fibonacci Equilibrium Confluence")
 
 con = connect_db()
@@ -284,7 +296,7 @@ with st.sidebar:
     
     if st.button("➕ Open Brodax Trade", use_container_width=True):
         df_temp, live_p, _ = get_market_data(symbol, timeframe)
-        res_temp = evaluate_price_lesson_strategy(df_temp, live_p)
+        res_temp = evaluate_bigman2_strategy(df_temp, live_p)
         candle_ts = df_temp.index[-1]
         success, msg = execute_auto_trade(con, symbol, timeframe, res_temp, lot_size=lot_input, candle_ts=candle_ts)
         if success:
@@ -294,13 +306,20 @@ with st.sidebar:
             st.sidebar.warning(msg)
 
     st.markdown("---")
+    if st.button("🗑️ Clear All Open Trades & History", use_container_width=True):
+        con.execute("DELETE FROM brodax_open_trades_v3")
+        con.execute("DELETE FROM brodax_trade_history")
+        con.commit()
+        st.sidebar.success("All trades cleared successfully!")
+        st.rerun()
+
     if st.button("🔄 Reset Demo Balance ($500)", use_container_width=True):
         con.execute("UPDATE brodax_account_balance SET balance_usd = 500.0 WHERE id = 1")
         con.commit()
         st.rerun()
 
 df, live_price, feed_source = get_market_data(symbol, timeframe)
-result = evaluate_price_lesson_strategy(df, live_price)
+result = evaluate_bigman2_strategy(df, live_price)
 current_candle_ts = df.index[-1]
 
 check_auto_exit_conditions(con, live_price, timeframe)
@@ -313,10 +332,10 @@ st.markdown(f"### 💵 Account Balance: **${curr_balance:,.2f} USD**")
 
 col1, col2, col3 = st.columns(3)
 col1.metric("Live Market Price", f"${live_price:,.2f}")
-col2.metric("Signal Bias", result["bias"])
-col3.metric("Zone / Fib Status", result["zone_type"])
+col2.metric("Bigman2 Bias", result["bias"])
+col3.metric("Zone Status", result["zone_type"])
 
-st.info(f"🟢 **Price Lesson Strategy Status:** Active | **Feed Source:** {feed_source}")
+st.info(f"🟢 **Bigman2 Strategy Status:** Active | **Feed Source:** {feed_source}")
 
 st.divider()
 
@@ -335,7 +354,7 @@ with left:
     components.html(chart_html, height=495, scrolling=False)
 
 with right:
-    st.subheader("💡 Price Lesson Strategy Confluence")
+    st.subheader("💡 Bigman2 S&D / Fib Confluence")
     st.write(f"**Strategy Breakdown:** {result['votes']}")
     st.write(f"**Stop Loss:** `${result['sl']:,.2f}` | **Take Profit:** `${result['tp']:,.2f}`")
     st.markdown("---")
