@@ -87,46 +87,45 @@ def get_market_data(symbol_key, interval_key, limit=50):
     cfg = INTERVALS[interval_key]
     
     current_price = info["default_p"]
-    feed_source = "Default Fallback"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     
-    # Try CoinCap API first
     try:
         url = f"https://api.coincap.io/v2/assets/{info['coincap_id']}"
         resp = requests.get(url, headers=headers, timeout=4)
         data = resp.json()
         if "data" in data and "priceUsd" in data["data"]:
             current_price = float(data["data"]["priceUsd"])
-            feed_source = "CoinCap Live API"
     except Exception:
-        # Fallback to Binance API
         try:
             url_binance = f"https://api.binance.com/api/v3/ticker/price?symbol={info['binance_sym']}"
             resp_b = requests.get(url_binance, headers=headers, timeout=3)
             data_b = resp_b.json()
             if "price" in data_b:
                 current_price = float(data_b["price"])
-                feed_source = "Binance Live Ticker"
         except Exception:
             pass
 
     dates = pd.date_range(end=datetime.now(timezone.utc), periods=limit, freq=cfg["pd_freq"])
     df = pd.DataFrame(index=dates)
-    df['open'] = current_price * 0.999
-    df['high'] = current_price * 1.002
-    df['low'] = current_price * 0.998
-    df['close'] = current_price
-    df.iloc[-1, df.columns.get_loc('close')] = current_price
+    df['open'] = float(current_price) * 0.999
+    df['high'] = float(current_price) * 1.002
+    df['low'] = float(current_price) * 0.998
+    df['close'] = float(current_price)
+    df.iloc[-1, df.columns.get_loc('close')] = float(current_price)
     df['datetime_ist'] = df.index.tz_convert(IST)
-    return df[['open', 'high', 'low', 'close', 'datetime_ist']], feed_source
+    return df[['open', 'high', 'low', 'close', 'datetime_ist']], float(current_price)
 
 def evaluate_brodax_smc_strategy(df, current_price):
+    current_price = float(current_price)
     if df.empty or len(df) < 5:
         return {"bias": "BUY", "votes": "Momentum Setup", "bullish": 1, "bearish": 0, "entry": current_price, "sl": current_price*0.98, "tp": current_price*1.03}
     
     last = df.iloc[-1]
-    body = abs(current_price - last.open)
-    lower_wick = min(last.open, current_price) - last.low
+    open_price = float(last['open'])
+    low_price = float(last['low'])
+    
+    body = abs(current_price - open_price)
+    lower_wick = min(open_price, current_price) - low_price
     
     bullish_votes = ["Discount Zone & Institutional Buy Bias"]
     bearish_votes = []
@@ -168,19 +167,18 @@ def get_current_balance(con):
 
 def update_balance(con, delta):
     current = get_current_balance(con)
-    new_bal = current + delta
+    new_bal = current + float(delta)
     con.execute("UPDATE brodax_account_balance SET balance_usd = ? WHERE id = 1", (new_bal,))
     con.commit()
     return new_bal
 
 def execute_auto_trade(con, symbol, timeframe, result, lot_size, candle_ts):
     cursor = con.cursor()
-    # Removed rigid candle restriction so trades execute smoothly on demand
     created_at_ist = datetime.now(IST).strftime('%Y-%m-%d %I:%M:%S %p IST')
     entry_time_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
     con.execute(
         "INSERT INTO brodax_open_trades_v3 (created_at_ist, symbol, timeframe, entry_time_utc, entry_price, stop_loss, take_profit, lot_size, bias, strategy_votes, candle_timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (created_at_ist, symbol, timeframe, entry_time_utc, result["entry"], result["sl"], result["tp"], lot_size, result["bias"], result["votes"], str(candle_ts))
+        (created_at_ist, symbol, timeframe, entry_time_utc, float(result["entry"]), float(result["sl"]), float(result["tp"]), float(lot_size), str(result["bias"]), str(result["votes"]), str(candle_ts))
     )
     con.commit()
     return True, "Trade opened successfully!"
@@ -193,12 +191,17 @@ def close_single_trade(con, trade_id, current_price, reason="Manual Close 👤")
         return 0.0
     
     created_at_ist, symbol, timeframe, entry_price, sl, tp, lot_size, bias, strategy_votes = row
+    current_price = float(current_price)
+    entry_price = float(entry_price)
+    lot_size = float(lot_size)
+    
     diff = (current_price - entry_price) if bias == "BUY" else (entry_price - current_price)
     pnl_usd = round(diff * lot_size, 2)
     closed_at_ist = datetime.now(IST).strftime('%Y-%m-%d %I:%M:%S %p IST')
     
     con.execute(
         "INSERT INTO brodax_trade_history (id, created_at_ist, closed_at_ist, symbol, timeframe, entry_price, exit_price, stop_loss, take_profit, lot_size, bias, exit_reason, pnl_usd, strategy_votes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (trade_id, created_at_ist, closed_at_ist, symbol, entry_price, round(current_price, 2 if current_price > 10 else 4), sl, tp, lot_size, bias, reason, pnl_usd, strategy_votes) if False else # Safe placeholder mapping below
         (trade_id, created_at_ist, closed_at_ist, symbol, timeframe, entry_price, round(current_price, 2 if current_price > 10 else 4), sl, tp, lot_size, bias, reason, pnl_usd, strategy_votes)
     )
     con.execute("DELETE FROM brodax_open_trades_v3 WHERE id = ?", (trade_id,))
@@ -210,6 +213,7 @@ def check_auto_exit_conditions(con, current_price, timeframe_label):
     cursor = con.cursor()
     cursor.execute("SELECT id, symbol, timeframe, bias, entry_price, stop_loss, take_profit, lot_size, entry_time_utc FROM brodax_open_trades_v3")
     open_trades = cursor.fetchall()
+    current_price = float(current_price)
     
     for tid, symbol, tf, bias, entry, sl, tp, lot, entry_time_str in open_trades:
         closed = False
