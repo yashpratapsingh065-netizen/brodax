@@ -302,28 +302,10 @@ with left:
     tv_sym = CRYPTO_SYMBOLS[symbol]["tv_symbol"]
     tv_int = INTERVALS[timeframe]["tv_int"]
     
-    # Clean and robust TradingView widget script that never turns blank
+    # Clean iframe embed that avoids all Python/JS curly brace syntax conflicts
     html = f"""
-    <div class="tradingview-widget-container" style="height:480px;width:100%">
-      <div id="tv_chart_container" style="height:480px;width:100%"></div>
-      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-      <script type="text/javascript">
-      try {
-          new TradingView.widget({{
-            "autosize": true,
-            "symbol": "{tv_sym}",
-            "interval": "{tv_int}",
-            "timezone": "Asia/Kolkata",
-            "theme": "dark",
-            "style": "1",
-            "locale": "en",
-            "enable_publishing": false,
-            "hide_side_toolbar": false,
-            "allow_symbol_change": false,
-            "container_id": "tv_chart_container"
-          }});
-      } catch(e) {{}}
-      </script>
+    <div style="height:480px;width:100%">
+      <iframe src="https://s.tradingview.com/widgetembed/?symbol={tv_sym}&interval={tv_int}&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=1&toolbarbg=f1f3f6&studies=[]&theme=dark&style=1&timezone=Asia%2FKolkata&locale=en" style="width:100%;height:480px;border:none;" scrolling="no"></iframe>
     </div>
     """
     components.html(html, height=495, scrolling=False)
