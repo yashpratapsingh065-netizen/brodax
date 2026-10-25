@@ -18,10 +18,10 @@ st.set_page_config(
 DB_PATH = os.getenv("BRODAX_DB_PATH", "brodax_crypto_bot.db")
 
 CRYPTO_SYMBOLS = {
-    "Bitcoin (BTC/USD)": {"cc_sym": "BTC", "tv_symbol": "BINANCE:BTCUSDT", "lot": 0.01, "default_p": 81000.0},
-    "Ethereum (ETH/USD)": {"cc_sym": "ETH", "tv_symbol": "BINANCE:ETHUSDT", "lot": 0.1, "default_p": 2400.0},
-    "Solana (SOL/USD)": {"cc_sym": "SOL", "tv_symbol": "BINANCE:SOLUSDT", "lot": 1.0, "default_p": 180.0},
-    "Ripple (XRP/USD)": {"cc_sym": "XRP", "tv_symbol": "BINANCE:XRPUSDT", "lot": 10.0, "default_p": 2.5}
+    "Bitcoin (BTC/USD)": {"binance_sym": "BTCUSDT", "tv_symbol": "BINANCE:BTCUSDT", "lot": 0.01, "default_p": 80850.0},
+    "Ethereum (ETH/USD)": {"binance_sym": "ETHUSDT", "tv_symbol": "BINANCE:ETHUSDT", "lot": 0.1, "default_p": 2350.0},
+    "Solana (SOL/USD)": {"binance_sym": "SOLUSDT", "tv_symbol": "BINANCE:SOLUSDT", "lot": 1.0, "default_p": 180.0},
+    "Ripple (XRP/USD)": {"binance_sym": "XRPUSDT", "tv_symbol": "BINANCE:XRPUSDT", "lot": 10.0, "default_p": 2.5}
 }
 
 INTERVALS = {
@@ -87,14 +87,30 @@ def get_market_data(symbol_key, interval_key, limit=50):
     cfg = INTERVALS[interval_key]
     
     current_price = info["default_p"]
+    feed_source = "Fallback Data Feed"
+    
+    # Try direct Binance ticker API
     try:
-        url = f"https://min-api.cryptocompare.com/data/price?fsym={info['cc_sym']}&tsyms=USD"
-        resp = requests.get(url, timeout=4)
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={info['binance_sym']}"
+        resp = requests.get(url, timeout=3)
         data = resp.json()
-        if "USD" in data:
-            current_price = float(data["USD"])
+        if "price" in data:
+            current_price = float(data["price"])
+            feed_source = "Binance Direct Live Ticker"
     except Exception:
-        pass
+        # Secondary fallback API
+        try:
+            url_alt = f"https://api.coincap.io/v2/assets"
+            resp_alt = requests.get(url_alt, timeout=3)
+            data_alt = resp_alt.json()
+            if "data" in data_alt:
+                for coin in data_alt["data"]:
+                    if coin["symbol"] == info["binance_sym"].replace("USDT", ""):
+                        current_price = float(coin["priceUsd"])
+                        feed_source = "CoinCap Live Feed"
+                        break
+        except Exception:
+            pass
 
     dates = pd.date_range(end=datetime.now(timezone.utc), periods=limit, freq=cfg["pd_freq"])
     df = pd.DataFrame(index=dates)
@@ -103,7 +119,7 @@ def get_market_data(symbol_key, interval_key, limit=50):
     df['low'] = current_price * 0.998
     df['close'] = current_price
     df['datetime_ist'] = df.index.tz_convert(IST)
-    return df[['open', 'high', 'low', 'close', 'datetime_ist']], "CryptoCompare Live Feed"
+    return df[['open', 'high', 'low', 'close', 'datetime_ist']], feed_source
 
 def evaluate_brodax_smc_strategy(df):
     if df.empty or len(df) < 5:
@@ -116,7 +132,7 @@ def evaluate_brodax_smc_strategy(df):
     bullish_votes = []
     bearish_votes = []
 
-    if last.close > last.open:
+    if last.close >= last.open:
         bullish_votes.append("Discount Zone & Bullish Momentum")
     else:
         bearish_votes.append("Premium Zone & Bearish Momentum")
@@ -237,7 +253,7 @@ def check_auto_exit_conditions(con, current_price, timeframe_label):
             close_single_trade(con, tid, exit_p, reason=reason)
 
 st.title("⚡ BRODAX — 24/7 Crypto Institutional Bot")
-st.caption("CryptoCompare Live Feed • Manual Refresh • SMC Strategy")
+st.caption("Live Price Feed • Manual Refresh • SMC Strategy")
 
 con = connect_db()
 
@@ -302,7 +318,6 @@ with left:
     tv_sym = CRYPTO_SYMBOLS[symbol]["tv_symbol"]
     tv_int = INTERVALS[timeframe]["tv_int"]
     
-    # Clean iframe embed that avoids all Python/JS curly brace syntax conflicts
     html = f"""
     <div style="height:480px;width:100%">
       <iframe src="https://s.tradingview.com/widgetembed/?symbol={tv_sym}&interval={tv_int}&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=1&toolbarbg=f1f3f6&studies=[]&theme=dark&style=1&timezone=Asia%2FKolkata&locale=en" style="width:100%;height:480px;border:none;" scrolling="no"></iframe>
