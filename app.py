@@ -6,10 +6,14 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 import requests
-from streamlit_autorefresh import st_autorefresh
 
-# Auto-refresh dashboard every 5 seconds for live real-time price movement
-st_autorefresh(interval=5000, limit=None, key="brodax_live_ticker")
+# Native HTML Auto-Refresh every 5 seconds (Requires zero external packages!)
+st.markdown(
+    """
+    <meta http-equiv="refresh" content="5">
+    """,
+    unsafe_allow_html=True
+)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -113,10 +117,7 @@ def evaluate_brodax_smc_strategy(df):
         return {"bias": "BUY", "votes": "Momentum Setup", "bullish": 1, "bearish": 0, "entry": 100.0, "sl": 98.0, "tp": 104.0}
     
     last = df.iloc[-1]
-    prev = df.iloc[-2] if len(df) > 1 else last
-    
     body = abs(last.close - last.open)
-    rng = max(last.high - last.low, 1e-12)
     lower_wick = min(last.open, last.close) - last.low
     
     bullish_votes = []
@@ -243,19 +244,19 @@ def check_auto_exit_conditions(con, current_price, timeframe_label):
             close_single_trade(con, tid, exit_p, reason=reason)
 
 st.title("⚡ BRODAX — 24/7 Crypto Institutional Bot")
-st.caption("Auto-Refreshing CoinCap Feed • TP/SL Auto-Hit • SMC Strategy")
+st.caption("Auto-Live Feed (5s Refresh) • TP/SL Auto-Hit • SMC Strategy")
 
 con = connect_db()
 
 with st.sidebar:
     st.header("⚙️ Brodax Control Panel")
-    symbol = st.selectbox("Select Crypto Asset", list(CRYPTO_SYMBOLS.keys()), index=0)
+    symbol = st.selectbox("Select Crypto Asset", list(CRYPTO_SYMBOLS.key() if hasattr(CRYPTO_SYMBOLS, 'key') else CRYPTO_SYMBOLS.keys()), index=0)
     timeframe = st.selectbox("Timeframe", list(INTERVALS.keys()), index=1)
     
     default_lot = CRYPTO_SYMBOLS[symbol]["lot"]
     lot_input = st.number_input("Trade Lot Size", min_value=0.001, max_value=50.0, value=default_lot, step=0.01)
     
-    if st.button("🔄 Refresh Feed Now", use_container_width=True):
+    if st.button("🔄 Refresh Now", use_container_width=True):
         st.rerun()
 
     st.markdown("---")
@@ -278,7 +279,7 @@ with st.sidebar:
         con.commit()
         st.rerun()
 
-st.info("🟢 **Crypto Market Status:** 24/7 Live (Auto-Refreshing every 5s)")
+st.info("🟢 **Crypto Market Status:** 24/7 Live & Auto-Updating (Every 5 seconds)")
 df, data_source = get_market_data(symbol, timeframe)
 result = evaluate_brodax_smc_strategy(df)
 current_live_price = float(df.close.iloc[-1]) if not df.empty else CRYPTO_SYMBOLS[symbol]["default_p"]
@@ -294,7 +295,7 @@ st.markdown(f"### 💵 Account Balance: **${curr_balance:,.2f} USD**")
 
 col1, col2, col3 = st.columns(3)
 fmt = ".4f" if current_live_price < 10 else ".2f"
-col1.metric("Live CoinCap Price", f"${current_live_price:{fmt}}")
+col1.metric("Live Crypto Price", f"${current_live_price:{fmt}}")
 col2.metric("Signal Bias", result["bias"])
 col3.metric("Confluence Score", f"Bull: {result['bullish']} | Bear: {result['bearish']}")
 
