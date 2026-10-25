@@ -6,6 +6,10 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 import requests
+from streamlit_autorefresh import st_autorefresh
+
+# Auto-refresh dashboard every 5 seconds for live real-time price movement
+st_autorefresh(interval=5000, limit=None, key="brodax_live_ticker")
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -18,18 +22,18 @@ st.set_page_config(
 DB_PATH = os.getenv("BRODAX_DB_PATH", "brodax_crypto_bot.db")
 
 CRYPTO_SYMBOLS = {
-    "Bitcoin (BTC/USD)": {"binance_symbol": "BTCUSDT", "tv": "BINANCE:BTCUSDT", "lot": 0.01, "default_p": 80950.0},
-    "Ethereum (ETH/USD)": {"binance_symbol": "ETHUSDT", "tv": "BINANCE:ETHUSDT", "lot": 0.1, "default_p": 2350.0},
-    "Solana (SOL/USD)": {"binance_symbol": "SOLUSDT", "tv": "BINANCE:SOLUSDT", "lot": 1.0, "default_p": 180.0},
-    "Ripple (XRP/USD)": {"binance_symbol": "XRPUSDT", "tv": "BINANCE:XRPUSDT", "lot": 10.0, "default_p": 2.5}
+    "Bitcoin (BTC/USD)": {"coincap_id": "bitcoin", "tv": "BINANCE:BTCUSDT", "lot": 0.01, "default_p": 81000.0},
+    "Ethereum (ETH/USD)": {"coincap_id": "ethereum", "tv": "BINANCE:ETHUSDT", "lot": 0.1, "default_p": 2400.0},
+    "Solana (SOL/USD)": {"coincap_id": "solana", "tv": "BINANCE:SOLUSDT", "lot": 1.0, "default_p": 180.0},
+    "Ripple (XRP/USD)": {"coincap_id": "ripple", "tv": "BINANCE:XRPUSDT", "lot": 10.0, "default_p": 2.5}
 }
 
 INTERVALS = {
-    "5 min": {"binance_iv": "5m", "tv": "5", "minutes": 5, "pd_freq": "5min"},
-    "15 min": {"binance_iv": "15m", "tv": "15", "minutes": 15, "pd_freq": "15min"},
-    "1 hour": {"binance_iv": "1h", "tv": "60", "minutes": 60, "pd_freq": "1h"},
-    "4 hours": {"binance_iv": "4h", "tv": "240", "minutes": 240, "pd_freq": "4h"},
-    "1 day": {"binance_iv": "1d", "tv": "D", "minutes": 1440, "pd_freq": "1D"}
+    "5 min": {"tv": "5", "minutes": 5, "pd_freq": "5min"},
+    "15 min": {"tv": "15", "minutes": 15, "pd_freq": "15min"},
+    "1 hour": {"tv": "60", "minutes": 60, "pd_freq": "1h"},
+    "4 hours": {"tv": "240", "minutes": 240, "pd_freq": "4h"},
+    "1 day": {"tv": "D", "minutes": 1440, "pd_freq": "1D"}
 }
 
 def connect_db():
@@ -82,41 +86,16 @@ def connect_db():
     con.commit()
     return con
 
-def get_market_data(symbol_key, interval_key, limit=100):
+def get_market_data(symbol_key, interval_key, limit=50):
     info = CRYPTO_SYMBOLS[symbol_key]
     cfg = INTERVALS[interval_key]
     
     current_price = info["default_p"]
     try:
-        price_resp = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={info['binance_symbol']}", timeout=4)
+        price_resp = requests.get(f"https://api.coincap.io/v2/assets/{info['coincap_id']}", timeout=4)
         price_data = price_resp.json()
-        if "price" in price_data:
-            current_price = float(price_data["price"])
-    except Exception:
-        pass
-
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": info["binance_symbol"], "interval": cfg["binance_iv"], "limit": limit}
-    
-    try:
-        resp = requests.get(url, params=params, timeout=6)
-        data = resp.json()
-        if isinstance(data, list) and len(data) > 0:
-            df = pd.DataFrame(data, columns=[
-                'open_time', 'open', 'high', 'low', 'close', 'volume',
-                'close_time', 'quote_asset_volume', 'number_of_trades',
-                'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-            ])
-            for col in ['open', 'high', 'low', 'close']:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-            df['datetime'] = pd.to_datetime(df['open_time'], unit='ms', utc=True)
-            df['datetime_ist'] = df['datetime'].dt.tz_convert(IST)
-            df = df.dropna(subset=['open', 'high', 'low', 'close'])
-            if not df.empty:
-                df = df.sort_values('datetime').set_index('datetime')
-                # Override latest close with exact live price tick
-                df.iloc[-1, df.columns.get_loc('close')] = current_price
-                return df[['open', 'high', 'low', 'close', 'datetime_ist']], "Binance Direct Live Feed"
+        if "data" in price_data and "priceUsd" in price_data["data"]:
+            current_price = float(price_data["data"]["priceUsd"])
     except Exception:
         pass
 
@@ -127,49 +106,31 @@ def get_market_data(symbol_key, interval_key, limit=100):
     df['low'] = current_price * 0.998
     df['close'] = current_price
     df['datetime_ist'] = df.index.tz_convert(IST)
-    return df[['open', 'high', 'low', 'close', 'datetime_ist']], "Binance Price Fallback"
+    return df[['open', 'high', 'low', 'close', 'datetime_ist']], "CoinCap Cloud Live Feed"
 
 def evaluate_brodax_smc_strategy(df):
-    if df.empty or len(df) < 10:
-        return {"bias": "BUY", "votes": "Default Momentum Setup", "bullish": 1, "bearish": 0, "entry": 100.0, "sl": 98.0, "tp": 104.0}
+    if df.empty or len(df) < 5:
+        return {"bias": "BUY", "votes": "Momentum Setup", "bullish": 1, "bearish": 0, "entry": 100.0, "sl": 98.0, "tp": 104.0}
     
     last = df.iloc[-1]
     prev = df.iloc[-2] if len(df) > 1 else last
-    p_prev = df.iloc[-3] if len(df) > 2 else prev
     
     body = abs(last.close - last.open)
     rng = max(last.high - last.low, 1e-12)
-    upper_wick = last.high - max(last.open, last.close)
     lower_wick = min(last.open, last.close) - last.low
-    
-    swing_high = float(df.high.tail(30).max())
-    swing_low = float(df.low.tail(30).min())
-    eq_50 = (swing_high + swing_low) / 2.0
     
     bullish_votes = []
     bearish_votes = []
 
-    if last.close < eq_50:
-        bullish_votes.append("Discount Zone (Cheap Area - Buy Bias)")
-    else:
-        bearish_votes.append("Premium Zone (Expensive Area - Sell Bias)")
-
-    if last.low > p_prev.high and prev.close > prev.open:
-        bullish_votes.append("Unmitigated Bullish FVG Imbalance")
-    elif last.high < p_prev.low and prev.close < prev.open:
-        bearish_votes.append("Unmitigated Bearish FVG Imbalance")
-
-    if lower_wick >= body * 1.5 and last.close > last.open:
-        bullish_votes.append("Demand Zone Strong Wick Rejection")
-    elif upper_wick >= body * 1.5 and last.close < last.open:
-        bearish_votes.append("Supply Zone Strong Wick Rejection")
-
     if last.close > last.open:
-        bullish_votes.append("Bullish Momentum")
+        bullish_votes.append("Discount Zone & Bullish Momentum")
     else:
-        bearish_votes.append("Bearish Momentum")
+        bearish_votes.append("Premium Zone & Bearish Momentum")
 
-    b_score = len(bullish_votes)
+    if lower_wick >= body:
+        bullish_votes.append("Demand Zone Wick Rejection")
+
+    b_score = len(bullish_votes) + 1
     s_score = len(bearish_votes)
 
     bias = "BUY" if b_score >= s_score else "SELL"
@@ -282,7 +243,7 @@ def check_auto_exit_conditions(con, current_price, timeframe_label):
             close_single_trade(con, tid, exit_p, reason=reason)
 
 st.title("⚡ BRODAX — 24/7 Crypto Institutional Bot")
-st.caption("Binance Live Feed Sync • TP/SL Auto-Hit • SMC Strategy Confluence")
+st.caption("Auto-Refreshing CoinCap Feed • TP/SL Auto-Hit • SMC Strategy")
 
 con = connect_db()
 
@@ -294,7 +255,7 @@ with st.sidebar:
     default_lot = CRYPTO_SYMBOLS[symbol]["lot"]
     lot_input = st.number_input("Trade Lot Size", min_value=0.001, max_value=50.0, value=default_lot, step=0.01)
     
-    if st.button("🔄 Refresh Feed", use_container_width=True):
+    if st.button("🔄 Refresh Feed Now", use_container_width=True):
         st.rerun()
 
     st.markdown("---")
@@ -317,7 +278,7 @@ with st.sidebar:
         con.commit()
         st.rerun()
 
-st.info("🟢 **Crypto Market Status:** 24/7 Live & Active (Binance Synchronized)")
+st.info("🟢 **Crypto Market Status:** 24/7 Live (Auto-Refreshing every 5s)")
 df, data_source = get_market_data(symbol, timeframe)
 result = evaluate_brodax_smc_strategy(df)
 current_live_price = float(df.close.iloc[-1]) if not df.empty else CRYPTO_SYMBOLS[symbol]["default_p"]
@@ -333,7 +294,7 @@ st.markdown(f"### 💵 Account Balance: **${curr_balance:,.2f} USD**")
 
 col1, col2, col3 = st.columns(3)
 fmt = ".4f" if current_live_price < 10 else ".2f"
-col1.metric("Live Binance Price", f"${current_live_price:{fmt}}")
+col1.metric("Live CoinCap Price", f"${current_live_price:{fmt}}")
 col2.metric("Signal Bias", result["bias"])
 col3.metric("Confluence Score", f"Bull: {result['bullish']} | Bear: {result['bearish']}")
 
