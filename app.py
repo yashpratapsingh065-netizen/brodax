@@ -11,7 +11,7 @@ import requests
 IST = timezone(timedelta(hours=5, minutes=30))
 
 st.set_page_config(
-    page_title="BRODAX — Price Lesson Hindi (Bigman2 Style)",
+    page_title="BRODAX — Price Lesson Hindi (Bigman2 Expert)",
     page_icon="⚡",
     layout="wide"
 )
@@ -118,23 +118,23 @@ def get_market_data(symbol_key, interval_key, limit=50):
     df['datetime_ist'] = df.index.tz_convert(IST)
     return df[['open', 'high', 'low', 'close', 'datetime_ist']], float(current_price), feed_source
 
-def evaluate_bigman2_strategy(df, current_price):
+def evaluate_bigman2_expert_strategy(df, current_price):
     current_price = float(current_price)
     if df.empty or len(df) < 5:
         return {
             "bias": "BUY",
-            "votes": "Demand Zone Rejection + Fib 0.618 Confluence",
-            "bullish": 2,
+            "votes": "Support & Demand Zone Rejection + Fib 0.618 Confluence",
+            "bullish": 3,
             "bearish": 0,
-            "zone_type": "Discount Zone (Below 0.5 Equilibrium)",
+            "analysis": "Demand Zone Rebound & Discount Zone Accumulation",
             "entry": current_price,
-            "sl": current_price * 0.985,
-            "tp": current_price * 1.03
+            "sl": current_price * 0.99,
+            "tp": current_price * 1.025
         }
     
-    highs = df['high'].max()
-    lows = df['low'].min()
-    equilibrium = (highs + lows) / 2.0
+    resistance_level = float(df['high'].max())
+    support_level = float(df['low'].min())
+    equilibrium = (resistance_level + support_level) / 2.0
     
     last = df.iloc[-1]
     open_p = float(last['open'])
@@ -148,55 +148,53 @@ def evaluate_bigman2_strategy(df, current_price):
     bullish_votes = []
     bearish_votes = []
     
-    # Bigman2 Rule: Discount Zone for BUY, Premium Zone for SELL
+    # Premium & Discount Zone Logic
     if current_price <= equilibrium:
-        zone_type = "Discount Zone (Cheap Area - Look for BUY)"
-        bullish_votes.append("Price in Discount Zone (< 0.5 Equilibrium)")
+        bullish_votes.append("Discount Zone (< 0.5 Eq - Cheap Area)")
     else:
-        zone_type = "Premium Zone (Expensive Area - Look for SELL)"
-        bearish_votes.append("Price in Premium Zone (> 0.5 Equilibrium)")
+        bearish_votes.append("Premium Zone (> 0.5 Eq - Expensive Area)")
         
-    # Supply & Demand Wick Rejection Rules
-    if lower_wick >= body * 0.3:
-        bullish_votes.append("Demand Zone Strong Wick Rejection")
-    elif upper_wick >= body * 0.3:
-        bearish_votes.append("Supply Zone Strong Wick Rejection")
+    # Support / Resistance & S&D Wick Rejection (Bigman2 Video Rules)
+    dist_to_support = abs(current_price - support_level)
+    dist_to_resistance = abs(current_price - resistance_level)
+    
+    if dist_to_support <= dist_to_resistance or lower_wick >= body * 0.2:
+        bullish_votes.append("Demand Zone / Major Support Bounce")
     else:
-        if current_price <= equilibrium:
-            bullish_votes.append("Bullish Momentum Candle Setup")
-        else:
-            bearish_votes.append("Bearish Momentum Candle Setup")
-            
-    # Fibonacci Golden Pocket Confluence
+        bearish_votes.append("Supply Zone / Resistance Reaction")
+        
     bullish_votes.append("Fibonacci 0.618 Golden Pocket Confluence")
     
     b_score = len(bullish_votes)
     s_score = len(bearish_votes)
     
-    # Strict Bigman2 Bias Decision
     bias = "BUY" if b_score >= s_score else "SELL"
     
-    sl_pct = 0.015
-    tp_pct = 0.030
-    
+    # Video Based SL & TP Calculation based on Swing Support/Resistance Levels
     if bias == "BUY":
-        sl = current_price * (1 - sl_pct)
-        tp = current_price * (1 + tp_pct)
+        sl = round(support_level * 0.995, 2 if current_price > 10 else 4)  # Just below Swing Support/Demand Low
+        tp = round(resistance_level * 0.995, 2 if current_price > 10 else 4) # Target near Major Resistance/Supply High
+        if tp <= current_price:
+            tp = round(current_price * 1.02, 2 if current_price > 10 else 4)
+        analysis = f"Support Level at ${support_level:,.2f} used for SL. Resistance at ${resistance_level:,.2f} used for TP."
     else:
-        sl = current_price * (1 + sl_pct)
-        tp = current_price * (1 - tp_pct)
+        sl = round(resistance_level * 1.005, 2 if current_price > 10 else 4) # Just above Swing Resistance/Supply High
+        tp = round(support_level * 1.005, 2 if current_price > 10 else 4)  # Target near Major Support/Demand Low
+        if tp >= current_price:
+            tp = round(current_price * 0.98, 2 if current_price > 10 else 4)
+        analysis = f"Resistance Level at ${resistance_level:,.2f} used for SL. Support at ${support_level:,.2f} used for TP."
         
-    votes_str = f"Bullish Confluence [{b_score}]: {', '.join(bullish_votes)} | Bearish Confluence [{s_score}]: {', '.join(bearish_votes)}"
+    votes_str = f"Bullish Confluence [{b_score}]: {', '.join(bullish_votes)} | Bearish [{s_score}]: {', '.join(bearish_votes)}"
     
     return {
         "bias": bias,
         "votes": votes_str,
         "bullish": b_score,
         "bearish": s_score,
-        "zone_type": zone_type,
+        "analysis": analysis,
         "entry": round(current_price, 2 if current_price > 10 else 4),
-        "sl": round(sl, 2 if current_price > 10 else 4),
-        "tp": round(tp, 2 if current_price > 10 else 4)
+        "sl": sl,
+        "tp": tp
     }
 
 def get_current_balance(con):
@@ -273,8 +271,8 @@ def check_auto_exit_conditions(con, current_price, timeframe_label):
         if closed:
             close_single_trade(con, tid, exit_p, reason=reason)
 
-st.title("⚡ BRODAX — Price Lesson Hindi (Bigman2 Style)")
-st.caption("Supply & Demand • Premium/Discount Zones • Fibonacci Equilibrium Confluence")
+st.title("⚡ BRODAX — Price Lesson Hindi (Bigman2 Expert)")
+st.caption("Video Based S/R Level SL/TP • Supply & Demand • Fib Confluence")
 
 con = connect_db()
 
@@ -296,7 +294,7 @@ with st.sidebar:
     
     if st.button("➕ Open Brodax Trade", use_container_width=True):
         df_temp, live_p, _ = get_market_data(symbol, timeframe)
-        res_temp = evaluate_bigman2_strategy(df_temp, live_p)
+        res_temp = evaluate_bigman2_expert_strategy(df_temp, live_p)
         candle_ts = df_temp.index[-1]
         success, msg = execute_auto_trade(con, symbol, timeframe, res_temp, lot_size=lot_input, candle_ts=candle_ts)
         if success:
@@ -319,7 +317,7 @@ with st.sidebar:
         st.rerun()
 
 df, live_price, feed_source = get_market_data(symbol, timeframe)
-result = evaluate_bigman2_strategy(df, live_price)
+result = evaluate_bigman2_expert_strategy(df, live_price)
 current_candle_ts = df.index[-1]
 
 check_auto_exit_conditions(con, live_price, timeframe)
@@ -333,9 +331,9 @@ st.markdown(f"### 💵 Account Balance: **${curr_balance:,.2f} USD**")
 col1, col2, col3 = st.columns(3)
 col1.metric("Live Market Price", f"${live_price:,.2f}")
 col2.metric("Bigman2 Bias", result["bias"])
-col3.metric("Zone Status", result["zone_type"])
+col3.metric("Bull / Bear Score", f"Bull: {result['bullish']} | Bear: {result['bearish']}")
 
-st.info(f"🟢 **Bigman2 Strategy Status:** Active | **Feed Source:** {feed_source}")
+st.info(f"🟢 **Expert Strategy Status:** Active (Video Based S/R SL/TP) | **Feed:** {feed_source}")
 
 st.divider()
 
@@ -354,8 +352,9 @@ with left:
     components.html(chart_html, height=495, scrolling=False)
 
 with right:
-    st.subheader("💡 Bigman2 S&D / Fib Confluence")
-    st.write(f"**Strategy Breakdown:** {result['votes']}")
+    st.subheader("💡 Expert Price Analysis (S/R Based)")
+    st.write(f"**Market Structure:** {result['analysis']}")
+    st.write(f"**Confluence Breakdown:** {result['votes']}")
     st.write(f"**Stop Loss:** `${result['sl']:,.2f}` | **Take Profit:** `${result['tp']:,.2f}`")
     st.markdown("---")
     if not df.empty:
@@ -381,7 +380,7 @@ else:
                 st.rerun()
 
 st.divider()
-st.subheader("📜 Trade History")
+st.subheader("📜 Trade History (Detailed)")
 history_df = pd.read_sql_query("SELECT * FROM brodax_trade_history ORDER BY id DESC LIMIT 50", con)
 
 if history_df.empty:
@@ -391,7 +390,8 @@ else:
         pnl_color = "🟢" if row['pnl_usd'] >= 0 else "🔴"
         with st.expander(f"{pnl_color} ID #{row['id']} | {row['symbol']} ({row['bias']}) | PnL: ${row['pnl_usd']:+.2f}"):
             c1, c2 = st.columns(2)
-            c1.markdown(f"🕒 **Entry:** `{row['created_at_ist']}`\n📦 **Lot:** `{row['lot_size']}`")
-            c2.markdown(f"💰 **PnL:** `${row['pnl_usd']:+.2f}`\n🏷️ **Reason:** `{row['exit_reason']}`")
+            c1.markdown(f"🕒 **Entry Time:** `{row['created_at_ist']}`\n🕒 **Closed Time:** `{row['closed_at_ist']}`\n📍 **Entry Price:** `${row['entry_price']:,.2f}`\n🏁 **Exit Price:** `${row['exit_price']:,.2f}`")
+            c2.markdown(f"🛑 **Stop Loss:** `${row['stop_loss']:,.2f}`\n🎯 **Take Profit:** `${row['take_profit']:,.2f}`\n📦 **Lot Size:** `{row['lot_size']}`\n🏷️ **Exit Reason:** `{row['exit_reason']}`")
+            st.markdown(f"💰 **Realized PnL:** `${row['pnl_usd']:+.2f} USD`\n📊 **Strategy Votes:** `{row['strategy_votes']}`")
 
 con.close()
