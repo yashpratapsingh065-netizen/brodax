@@ -18,18 +18,18 @@ st.set_page_config(
 DB_PATH = os.getenv("BRODAX_DB_PATH", "brodax_crypto_bot.db")
 
 CRYPTO_SYMBOLS = {
-    "Bitcoin (BTC/USD)": {"cc_sym": "BTC", "tv": "BINANCE:BTCUSDT", "lot": 0.01, "default_p": 81000.0},
-    "Ethereum (ETH/USD)": {"cc_sym": "ETH", "tv": "BINANCE:ETHUSDT", "lot": 0.1, "default_p": 2400.0},
-    "Solana (SOL/USD)": {"cc_sym": "SOL", "tv": "BINANCE:SOLUSDT", "lot": 1.0, "default_p": 180.0},
-    "Ripple (XRP/USD)": {"cc_sym": "XRP", "tv": "BINANCE:XRPUSDT", "lot": 10.0, "default_p": 2.5}
+    "Bitcoin (BTC/USD)": {"cc_sym": "BTC", "tv_symbol": "BINANCE:BTCUSDT", "lot": 0.01, "default_p": 81000.0},
+    "Ethereum (ETH/USD)": {"cc_sym": "ETH", "tv_symbol": "BINANCE:ETHUSDT", "lot": 0.1, "default_p": 2400.0},
+    "Solana (SOL/USD)": {"cc_sym": "SOL", "tv_symbol": "BINANCE:SOLUSDT", "lot": 1.0, "default_p": 180.0},
+    "Ripple (XRP/USD)": {"cc_sym": "XRP", "tv_symbol": "BINANCE:XRPUSDT", "lot": 10.0, "default_p": 2.5}
 }
 
 INTERVALS = {
-    "5 min": {"tv": "5", "minutes": 5, "pd_freq": "5min"},
-    "15 min": {"tv": "15", "minutes": 15, "pd_freq": "15min"},
-    "1 hour": {"tv": "60", "minutes": 60, "pd_freq": "1h"},
-    "4 hours": {"tv": "240", "minutes": 240, "pd_freq": "4h"},
-    "1 day": {"tv": "D", "minutes": 1440, "pd_freq": "1D"}
+    "5 min": {"minutes": 5, "pd_freq": "5min"},
+    "15 min": {"minutes": 15, "pd_freq": "15min"},
+    "1 hour": {"minutes": 60, "pd_freq": "1h"},
+    "4 hours": {"minutes": 240, "pd_freq": "4h"},
+    "1 day": {"minutes": 1440, "pd_freq": "1D"}
 }
 
 def connect_db():
@@ -299,27 +299,11 @@ left, right = st.columns([1.8, 1])
 
 with left:
     st.subheader(f"📈 Live TradingView Chart ({symbol} - {timeframe})")
-    tv_symbol = CRYPTO_SYMBOLS[symbol]["tv"]
-    tv_interval = INTERVALS[timeframe]["tv"]
+    tv_sym = CRYPTO_SYMBOLS[symbol]["tv_symbol"]
+    # Fast loading TradingView Advanced Chart Embed HTML
     html = f"""
     <div class="tradingview-widget-container" style="height:480px;width:100%">
-      <div id="tradingview_chart_brodax" style="height:460px;width:100%"></div>
-      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-      <script type="text/javascript">
-      new TradingView.widget({{
-        "autosize": true,
-        "symbol": "{tv_symbol}",
-        "interval": "{tv_interval}",
-        "timezone": "Asia/Kolkata",
-        "theme": "dark",
-        "style": "1",
-        "locale": "en",
-        "enable_publishing": false,
-        "allow_symbol_change": true,
-        "hide_side_toolbar": false,
-        "container_id": "tradingview_chart_brodax"
-      }});
-      </script>
+      <iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/widgetembed/?symbol={tv_sym}&interval=15&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=1&toolbarbg=f1f3f6&studies=[]&theme=dark&style=1&timezone=Asia%2FKolkata&studies_overrides={{}}&overrides={{}}&enabled_features={{}}&disabled_features={{}}&locale=en&utm_source=&utm_medium=widget&utm_campaign=chart&utm_term={tv_sym}" style="box-sizing: border-box; height: 100%; width: 100%;"></iframe>
     </div>
     """
     components.html(html, height=490, scrolling=False)
