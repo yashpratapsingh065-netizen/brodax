@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-import yfinance as yf
+import requests
 
 # Indian Standard Time (IST) Offset: UTC + 5:30
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -19,18 +19,18 @@ st.set_page_config(
 DB_PATH = os.getenv("BRODAX_DB_PATH", "brodax_crypto_bot.db")
 
 CRYPTO_SYMBOLS = {
-    "Bitcoin (BTC/USD)": {"yf": "BTC-USD", "tv": "BINANCE:BTCUSDT", "lot": 0.01},
-    "Ethereum (ETH/USD)": {"yf": "ETH-USD", "tv": "BINANCE:ETHUSDT", "lot": 0.1},
-    "Solana (SOL/USD)": {"yf": "SOL-USD", "tv": "BINANCE:SOLUSDT", "lot": 1.0},
-    "Ripple (XRP/USD)": {"yf": "XRP-USD", "tv": "BINANCE:XRPUSDT", "lot": 10.0}
+    "Bitcoin (BTC/USD)": {"binance": "BTCUSDT", "tv": "BINANCE:BTCUSDT", "lot": 0.01},
+    "Ethereum (ETH/USD)": {"binance": "ETHUSDT", "tv": "BINANCE:ETHUSDT", "lot": 0.1},
+    "Solana (SOL/USD)": {"binance": "SOLUSDT", "tv": "BINANCE:SOLUSDT", "lot": 1.0},
+    "Ripple (XRP/USD)": {"binance": "XRPUSDT", "tv": "BINANCE:XRPUSDT", "lot": 10.0}
 }
 
 INTERVALS = {
-    "5 min": {"yf": "5m", "tv": "5", "minutes": 5},
-    "15 min": {"yf": "15m", "tv": "15", "minutes": 15},
-    "1 hour": {"yf": "60m", "tv": "60", "minutes": 60},
-    "4 hours": {"yf": "1h", "tv": "240", "minutes": 240},
-    "1 day": {"yf": "1d", "tv": "D", "minutes": 1440}
+    "5 min": {"binance": "5m", "tv": "5", "minutes": 5},
+    "15 min": {"binance": "15m", "tv": "15", "minutes": 15},
+    "1 hour": {"binance": "1h", "tv": "60", "minutes": 60},
+    "4 hours": {"binance": "4h", "tv": "240", "minutes": 240},
+    "1 day": {"binance": "1d", "tv": "D", "minutes": 1440}
 }
 
 def connect_db():
@@ -83,18 +83,36 @@ def connect_db():
     con.commit()
     return con
 
-def get_crypto_matched_data(symbol_key, interval_key, rows=250):
+def get_binance_market_data(symbol_key, interval_key, limit=250):
     info = CRYPTO_SYMBOLS[symbol_key]
     cfg = INTERVALS[interval_key]
+    
+    url = "https://api.binance.com/api/v3/klines"
+    params = {
+        "symbol": info["binance"],
+        "interval": cfg["binance"],
+        "limit": limit
+    }
+    
     try:
-        ticker = yf.Ticker(info["yf"])
-        df = ticker.history(period="7d", interval=cfg["yf"])
-        if not df.empty:
-            df = df.rename(columns={"Open": "open", "High": "high", "Low": "low", "Close": "close"})
-            df["datetime_ist"] = df.index.tz_convert(IST)
-            return df[["open", "high", "low", "close", "datetime_ist"]].tail(rows), "Live Crypto Spot Feed"
-    except Exception:
+        resp = requests.get(url, params=params, timeout=6)
+        data = resp.json()
+        if isinstance(data, list) and len(data) > 0:
+            df = pd.DataFrame(data, columns=[
+                'open_time', 'open', 'high', 'low', 'close', 'volume',
+                'close_time', 'quote_asset_volume', 'number_of_trades',
+                'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+            ])
+            for col in ['open', 'high', 'low', 'close']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            df['datetime'] = pd.to_datetime(df['open_time'], unit='ms', utc=True)
+            df['datetime_ist'] = df['datetime'].dt.tz_convert(IST)
+            df = df.set_index('datetime')
+            return df[['open', 'high', 'low', 'close', 'datetime_ist']], "Binance Direct Live Feed"
+    except Exception as e:
         pass
+        
     return pd.DataFrame(), "No Data"
 
 def evaluate_brodax_smc_strategy(df):
@@ -162,7 +180,6 @@ def evaluate_brodax_smc_strategy(df):
 
     current_close = float(last.close)
     
-    # Dynamic Crypto Percentage-based SL (1.5%) & TP (3.0% for 1:2 R:R)
     sl_pct = 0.015
     tp_pct = 0.030
     
@@ -287,7 +304,7 @@ def check_auto_exit_conditions(con, current_price, timeframe_label):
 
 # --- STREAMLIT UI ---
 st.title("⚡ BRODAX — 24/7 Crypto Institutional Bot")
-st.caption("TP/SL Auto-Hit, Time Expiry Exit & SMC Strategy Confluence")
+st.caption("Binance Live Feed Sync • TP/SL Auto-Hit • SMC Strategy Confluence")
 
 con = connect_db()
 
@@ -299,8 +316,8 @@ with st.sidebar:
     default_lot = CRYPTO_SYMBOLS[symbol]["lot"]
     lot_input = st.number_input("Trade Lot Size", min_value=0.001, max_value=50.0, value=default_lot, step=0.01)
     
-    if st.button("🔄 Refresh Market Feeds", use_container_width=True):
-        st.toast("Synced with TradingView crypto price feed!", icon="🔄")
+    if st.button("🔄 Refresh Binance Feed", use_container_width=True):
+        st.toast("Synced with Binance live price!", icon="🔄")
         st.rerun()
 
     st.markdown("---")
@@ -308,7 +325,7 @@ with st.sidebar:
     auto_mode = st.toggle("Enable Auto-Pilot Execution", value=False)
     
     if st.button("➕ Open Brodax Trade", use_container_width=True):
-        df_temp, _ = get_crypto_matched_data(symbol, timeframe)
+        df_temp, _ = get_binance_market_data(symbol, timeframe)
         if not df_temp.empty:
             res_temp = evaluate_brodax_smc_strategy(df_temp)
             candle_ts = df_temp.index[-1]
@@ -325,15 +342,14 @@ with st.sidebar:
         st.sidebar.success("Balance reset to $500.00!")
         st.rerun()
 
-st.info("🟢 **Crypto Market Status:** 24/7 Live & Active (Brodax is ready for execution)")
-df, data_source = get_crypto_matched_data(symbol, timeframe)
+st.info("🟢 **Crypto Market Status:** 24/7 Live & Active (Synced via Binance API)")
+df, data_source = get_binance_market_data(symbol, timeframe)
 
 if not df.empty:
     result = evaluate_brodax_smc_strategy(df)
     current_live_price = float(df.close.iloc[-1])
     current_candle_ts = df.index[-1]
     
-    # Automatically check TP/SL or time expiry for open trades
     check_auto_exit_conditions(con, current_live_price, timeframe)
     
     if auto_mode:
@@ -345,7 +361,7 @@ if not df.empty:
     
     col1, col2, col3 = st.columns(3)
     fmt = ".4f" if current_live_price < 10 else ".2f"
-    col1.metric("Live Crypto Price", f"${current_live_price:{fmt}}")
+    col1.metric("Live Binance Price", f"${current_live_price:{fmt}}")
     col2.metric("Signal Bias", result["bias"])
     col3.metric("Confluence Score", f"Bull: {result['bullish']} | Bear: {result['bearish']}")
 
@@ -404,8 +420,8 @@ else:
         fmt = ".4f" if row['entry_price'] < 10 else ".2f"
         with st.expander(f"📌 Trade ID #{row['id']} | {row['symbol']} ({row['bias']} - {row['lot_size']} Lot) - TF: {row['timeframe']}"):
             c1, c2 = st.columns(2)
-            c1.markdown(f"🕒 **Entry Time:** `{row['created_at_ist']}`\n📍 **Entry Price:** `${row['entry_price']:{fmt}}`\n🛑 **Stop Loss:** `{row['stop_loss']:{fmt}}`")
-            c2.markdown(f"🎯 **Take Profit:** `{row['take_profit']:{fmt}}`\n⚡ **Status:** `OPEN`\n📊 **Votes:** `{row['strategy_votes']}`")
+            c1.markdown(f"🕒 **Entry Time:** `{row['created_at_ist']}`\n📍 **Entry Price:** `${row['entry_price']:{fmt}}`\n🛑 **Stop Loss:** `${row['stop_loss']:{fmt}}`")
+            c2.markdown(f"🎯 **Take Profit:** `${row['take_profit']:{fmt}}`\n⚡ **Status:** `OPEN`\n📊 **Votes:** `{row['strategy_votes']}`")
             
             if st.button(f"Close Trade #{row['id']} Now", key=f"close_open_{row['id']}"):
                 current_p = float(df.close.iloc[-1]) if not df.empty else row['entry_price']
