@@ -25,11 +25,11 @@ CRYPTO_SYMBOLS = {
 }
 
 INTERVALS = {
-    "5 min": {"minutes": 5, "pd_freq": "5min"},
-    "15 min": {"minutes": 15, "pd_freq": "15min"},
-    "1 hour": {"minutes": 60, "pd_freq": "1h"},
-    "4 hours": {"minutes": 240, "pd_freq": "4h"},
-    "1 day": {"minutes": 1440, "pd_freq": "1D"}
+    "5 min": {"tv_int": "5", "minutes": 5, "pd_freq": "5min"},
+    "15 min": {"tv_int": "15", "minutes": 15, "pd_freq": "15min"},
+    "1 hour": {"tv_int": "60", "minutes": 60, "pd_freq": "1h"},
+    "4 hours": {"tv_int": "240", "minutes": 240, "pd_freq": "4h"},
+    "1 day": {"tv_int": "D", "minutes": 1440, "pd_freq": "1D"}
 }
 
 def connect_db():
@@ -300,13 +300,33 @@ left, right = st.columns([1.8, 1])
 with left:
     st.subheader(f"📈 Live TradingView Chart ({symbol} - {timeframe})")
     tv_sym = CRYPTO_SYMBOLS[symbol]["tv_symbol"]
-    # Fast loading TradingView Advanced Chart Embed HTML
+    tv_int = INTERVALS[timeframe]["tv_int"]
+    
+    # Clean and robust TradingView widget script that never turns blank
     html = f"""
     <div class="tradingview-widget-container" style="height:480px;width:100%">
-      <iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/widgetembed/?symbol={tv_sym}&interval=15&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=1&toolbarbg=f1f3f6&studies=[]&theme=dark&style=1&timezone=Asia%2FKolkata&studies_overrides={{}}&overrides={{}}&enabled_features={{}}&disabled_features={{}}&locale=en&utm_source=&utm_medium=widget&utm_campaign=chart&utm_term={tv_sym}" style="box-sizing: border-box; height: 100%; width: 100%;"></iframe>
+      <div id="tv_chart_container" style="height:480px;width:100%"></div>
+      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+      <script type="text/javascript">
+      try {
+          new TradingView.widget({{
+            "autosize": true,
+            "symbol": "{tv_sym}",
+            "interval": "{tv_int}",
+            "timezone": "Asia/Kolkata",
+            "theme": "dark",
+            "style": "1",
+            "locale": "en",
+            "enable_publishing": false,
+            "hide_side_toolbar": false,
+            "allow_symbol_change": false,
+            "container_id": "tv_chart_container"
+          }});
+      } catch(e) {{}}
+      </script>
     </div>
     """
-    components.html(html, height=490, scrolling=False)
+    components.html(html, height=495, scrolling=False)
 
 with right:
     st.subheader("💡 Brodax SMC Confluence")
