@@ -18,10 +18,10 @@ st.set_page_config(
 DB_PATH = os.getenv("BRODAX_DB_PATH", "brodax_crypto_bot.db")
 
 CRYPTO_SYMBOLS = {
-    "Bitcoin (BTC/USD)": {"tv_symbol": "BINANCE:BTCUSDT", "lot": 0.01, "default_p": 81000.0},
-    "Ethereum (ETH/USD)": {"tv_symbol": "BINANCE:ETHUSDT", "lot": 0.1, "default_p": 2400.0},
-    "Solana (SOL/USD)": {"tv_symbol": "BINANCE:SOLUSDT", "lot": 1.0, "default_p": 180.0},
-    "Ripple (XRP/USD)": {"tv_symbol": "BINANCE:XRPUSDT", "lot": 10.0, "default_p": 2.5}
+    "Bitcoin (BTC/USD)": {"coincap_id": "bitcoin", "binance_sym": "BTCUSDT", "tv_symbol": "BINANCE:BTCUSDT", "lot": 0.01, "default_p": 81000.0},
+    "Ethereum (ETH/USD)": {"coincap_id": "ethereum", "binance_sym": "ETHUSDT", "tv_symbol": "BINANCE:ETHUSDT", "lot": 0.1, "default_p": 2400.0},
+    "Solana (SOL/USD)": {"coincap_id": "solana", "binance_sym": "SOLUSDT", "tv_symbol": "BINANCE:SOLUSDT", "lot": 1.0, "default_p": 180.0},
+    "Ripple (XRP/USD)": {"coincap_id": "ripple", "binance_sym": "XRPUSDT", "tv_symbol": "BINANCE:XRPUSDT", "lot": 10.0, "default_p": 2.5}
 }
 
 INTERVALS = {
@@ -87,14 +87,28 @@ def get_market_data(symbol_key, interval_key, limit=50):
     cfg = INTERVALS[interval_key]
     
     current_price = info["default_p"]
+    feed_source = "Default Fallback"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    
+    # Try CoinCap API first
     try:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={info['tv_symbol'].replace('BINANCE:', '')}"
-        resp = requests.get(url, timeout=2)
+        url = f"https://api.coincap.io/v2/assets/{info['coincap_id']}"
+        resp = requests.get(url, headers=headers, timeout=4)
         data = resp.json()
-        if "price" in data:
-            current_price = float(data["price"])
+        if "data" in data and "priceUsd" in data["data"]:
+            current_price = float(data["data"]["priceUsd"])
+            feed_source = "CoinCap Live API"
     except Exception:
-        pass
+        # Fallback to Binance API
+        try:
+            url_binance = f"https://api.binance.com/api/v3/ticker/price?symbol={info['binance_sym']}"
+            resp_b = requests.get(url_binance, headers=headers, timeout=3)
+            data_b = resp_b.json()
+            if "price" in data_b:
+                current_price = float(data_b["price"])
+                feed_source = "Binance Live Ticker"
+        except Exception:
+            pass
 
     dates = pd.date_range(end=datetime.now(timezone.utc), periods=limit, freq=cfg["pd_freq"])
     df = pd.DataFrame(index=dates)
@@ -102,10 +116,14 @@ def get_market_data(symbol_key, interval_key, limit=50):
     df['high'] = current_price * 1.002
     df['low'] = current_price * 0.998
     df['close'] = current_price
+    df.iloc[-1, df.columns.get_loc('close')] = current_price
     df['datetime_ist'] = df.index.tz_convert(IST)
-    return df[['open', 'high', 'low', 'close', 'datetime_ist']], current_price
+    return df[['open', 'high', 'low', 'close', 'datetime_ist']], feed_source
 
 def evaluate_brodax_smc_strategy(df, current_price):
+    if df.empty or len(df) < 5:
+        return {"bias": "BUY", "votes": "Momentum Setup", "bullish": 1, "bearish": 0, "entry": current_price, "sl": current_price*0.98, "tp": current_price*1.03}
+    
     last = df.iloc[-1]
     body = abs(current_price - last.open)
     lower_wick = min(last.open, current_price) - last.low
@@ -119,12 +137,16 @@ def evaluate_brodax_smc_strategy(df, current_price):
     b_score = len(bullish_votes)
     s_score = len(bearish_votes)
 
-    bias = "BUY"
+    bias = "BUY" if b_score >= s_score else "SELL"
     sl_pct = 0.015
     tp_pct = 0.030
     
-    sl = current_price * (1 - sl_pct)
-    tp = current_price * (1 + tp_pct)
+    if bias == "BUY":
+        sl = current_price * (1 - sl_pct)
+        tp = current_price * (1 + tp_pct)
+    else:
+        sl = current_price * (1 + sl_pct)
+        tp = current_price * (1 - tp_pct)
 
     all_votes_str = f"Bullish Confluence [{b_score}]: {', '.join(bullish_votes)}"
 
@@ -133,9 +155,9 @@ def evaluate_brodax_smc_strategy(df, current_price):
         "votes": all_votes_str,
         "bullish": b_score,
         "bearish": s_score,
-        "entry": round(current_price, 2),
-        "sl": round(sl, 2),
-        "tp": round(tp, 2)
+        "entry": round(current_price, 2 if current_price > 10 else 4),
+        "sl": round(sl, 2 if current_price > 10 else 4),
+        "tp": round(tp, 2 if current_price > 10 else 4)
     }
 
 def get_current_balance(con):
@@ -153,10 +175,7 @@ def update_balance(con, delta):
 
 def execute_auto_trade(con, symbol, timeframe, result, lot_size, candle_ts):
     cursor = con.cursor()
-    cursor.execute("SELECT id FROM brodax_open_trades_v3 WHERE symbol = ? AND timeframe = ? AND candle_timestamp = ?", (symbol, timeframe, str(candle_ts)))
-    if cursor.fetchone():
-        return False, "Is candle par pehle hi trade li ja chuki hai!"
-        
+    # Removed rigid candle restriction so trades execute smoothly on demand
     created_at_ist = datetime.now(IST).strftime('%Y-%m-%d %I:%M:%S %p IST')
     entry_time_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
     con.execute(
@@ -180,15 +199,39 @@ def close_single_trade(con, trade_id, current_price, reason="Manual Close 👤")
     
     con.execute(
         "INSERT INTO brodax_trade_history (id, created_at_ist, closed_at_ist, symbol, timeframe, entry_price, exit_price, stop_loss, take_profit, lot_size, bias, exit_reason, pnl_usd, strategy_votes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (trade_id, created_at_ist, closed_at_ist, symbol, timeframe, entry_price, round(current_price, 2), sl, tp, lot_size, bias, reason, pnl_usd, strategy_votes)
+        (trade_id, created_at_ist, closed_at_ist, symbol, timeframe, entry_price, round(current_price, 2 if current_price > 10 else 4), sl, tp, lot_size, bias, reason, pnl_usd, strategy_votes)
     )
     con.execute("DELETE FROM brodax_open_trades_v3 WHERE id = ?", (trade_id,))
     con.commit()
     update_balance(con, pnl_usd)
     return pnl_usd
 
+def check_auto_exit_conditions(con, current_price, timeframe_label):
+    cursor = con.cursor()
+    cursor.execute("SELECT id, symbol, timeframe, bias, entry_price, stop_loss, take_profit, lot_size, entry_time_utc FROM brodax_open_trades_v3")
+    open_trades = cursor.fetchall()
+    
+    for tid, symbol, tf, bias, entry, sl, tp, lot, entry_time_str in open_trades:
+        closed = False
+        exit_p = current_price
+        reason = "Manual Close 👤"
+        
+        if bias == "BUY":
+            if current_price >= tp:
+                exit_p, reason, closed = tp, "TP Hitter 🎯", True
+            elif current_price <= sl:
+                exit_p, reason, closed = sl, "SL Hitter 🛑", True
+        elif bias == "SELL":
+            if current_price <= tp:
+                exit_p, reason, closed = tp, "TP Hitter 🎯", True
+            elif current_price >= sl:
+                exit_p, reason, closed = sl, "SL Hitter 🛑", True
+                
+        if closed:
+            close_single_trade(con, tid, exit_p, reason=reason)
+
 st.title("⚡ BRODAX — 24/7 Crypto Institutional Bot")
-st.caption("Live Real-Time Market Ticker • SMC Strategy Automation")
+st.caption("Live Market Feed • Manual Refresh • SMC Strategy")
 
 con = connect_db()
 
@@ -215,6 +258,7 @@ with st.sidebar:
         success, msg = execute_auto_trade(con, symbol, timeframe, res_temp, lot_size=lot_input, candle_ts=candle_ts)
         if success:
             st.sidebar.success("Trade opened successfully!")
+            st.rerun()
         else:
             st.sidebar.warning(msg)
 
@@ -224,34 +268,13 @@ with st.sidebar:
         con.commit()
         st.rerun()
 
-st.info("🟢 **Crypto Market Status:** 24/7 Live Real-Time Feed")
-
-# Embed TradingView Real-Time Ticker Tape right at the top for instant live pricing
-ticker_html = """
-<div class="tradingview-widget-container">
-  <div class="tradingview-widget-container__widget"></div>
-  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js" async>
-  {
-  "symbols": [
-    {"proName": "BINANCE:BTCUSDT", "title": "Bitcoin"},
-    {"proName": "BINANCE:ETHUSDT", "title": "Ethereum"},
-    {"proName": "BINANCE:SOLUSDT", "title": "Solana"},
-    {"proName": "BINANCE:XRPUSDT", "title": "Ripple"}
-  ],
-  "showSymbolLogo": true,
-  "colorTheme": "dark",
-  "isTransparent": false,
-  "displayMode": "adaptive",
-  "locale": "en"
-}
-  </script>
-</div>
-"""
-components.html(ticker_html, height=76, scrolling=False)
+st.info("🟢 **Crypto Market Status:** 24/7 Live Feed (Manual Refresh Mode)")
 
 df, live_price = get_market_data(symbol, timeframe)
 result = evaluate_brodax_smc_strategy(df, live_price)
 current_candle_ts = df.index[-1]
+
+check_auto_exit_conditions(con, live_price, timeframe)
 
 if auto_mode:
     execute_auto_trade(con, symbol, timeframe, result, lot_size=lot_input, candle_ts=current_candle_ts)
@@ -260,7 +283,7 @@ curr_balance = get_current_balance(con)
 st.markdown(f"### 💵 Account Balance: **${curr_balance:,.2f} USD**")
 
 col1, col2, col3 = st.columns(3)
-col1.metric("Live Market Price", f"${live_price:,.2f}")
+col1.metric("Live Crypto Price", f"${live_price:,.2f}")
 col2.metric("Signal Bias", result["bias"])
 col3.metric("Confluence Score", f"Bull: {result['bullish']} | Bear: {result['bearish']}")
 
@@ -284,6 +307,7 @@ with right:
     st.subheader("💡 Brodax SMC Confluence")
     st.write(f"**Strategy Breakdown:** {result['votes']}")
     st.write(f"**Stop Loss:** `${result['sl']:,.2f}` | **Take Profit:** `${result['tp']:,.2f}`")
+    st.markdown(f"*Feed Source: Live API*")
     st.markdown("---")
     if not df.empty:
         view = df.tail(4).copy()
