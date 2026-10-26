@@ -384,7 +384,7 @@ else:
     for index, row in open_df.iterrows():
         with st.expander(f"📌 Trade ID #{row['id']} | {row['symbol']} ({row['bias']} - {row['lot_size']} Lot)"):
             c1, c2 = st.columns(2)
-4            c1.markdown(f"🕒 **Entry Time:** `{row['created_at_ist']}`\n📍 **Entry Price:** `${row['entry_price']:,.2f}`\n🛑 **Stop Loss:** `${row['stop_loss']:,.2f}`")
+            c1.markdown(f"🕒 **Entry Time:** `{row['created_at_ist']}`\n📍 **Entry Price:** `${row['entry_price']:,.2f}`\n🛑 **Stop Loss:** `${row['stop_loss']:,.2f}`")
             c2.markdown(f"🎯 **Take Profit:** `${row['take_profit']:,.2f}`\n⚡ **Status:** `OPEN`\n📊 **Votes:** `{row['strategy_votes']}`")
             if st.button(f"Close Trade #{row['id']} Now", key=f"close_open_{row['id']}"):
                 pnl_realized = close_single_trade(con, row['id'], live_price, reason="Manual Close 👤")
