@@ -148,13 +148,11 @@ def evaluate_bigman2_expert_strategy(df, current_price):
     bullish_votes = []
     bearish_votes = []
     
-    # Premium & Discount Zone Logic
     if current_price <= equilibrium:
         bullish_votes.append("Discount Zone (< 0.5 Eq - Cheap Area)")
     else:
         bearish_votes.append("Premium Zone (> 0.5 Eq - Expensive Area)")
         
-    # Support / Resistance & S&D Wick Rejection (Bigman2 Video Rules)
     dist_to_support = abs(current_price - support_level)
     dist_to_resistance = abs(current_price - resistance_level)
     
@@ -170,16 +168,15 @@ def evaluate_bigman2_expert_strategy(df, current_price):
     
     bias = "BUY" if b_score >= s_score else "SELL"
     
-    # Video Based SL & TP Calculation based on Swing Support/Resistance Levels
     if bias == "BUY":
-        sl = round(support_level * 0.995, 2 if current_price > 10 else 4)  # Just below Swing Support/Demand Low
-        tp = round(resistance_level * 0.995, 2 if current_price > 10 else 4) # Target near Major Resistance/Supply High
+        sl = round(support_level * 0.995, 2 if current_price > 10 else 4)
+        tp = round(resistance_level * 0.995, 2 if current_price > 10 else 4)
         if tp <= current_price:
             tp = round(current_price * 1.02, 2 if current_price > 10 else 4)
         analysis = f"Support Level at ${support_level:,.2f} used for SL. Resistance at ${resistance_level:,.2f} used for TP."
     else:
-        sl = round(resistance_level * 1.005, 2 if current_price > 10 else 4) # Just above Swing Resistance/Supply High
-        tp = round(support_level * 1.005, 2 if current_price > 10 else 4)  # Target near Major Support/Demand Low
+        sl = round(resistance_level * 1.005, 2 if current_price > 10 else 4)
+        tp = round(support_level * 1.005, 2 if current_price > 10 else 4)
         if tp >= current_price:
             tp = round(current_price * 0.98, 2 if current_price > 10 else 4)
         analysis = f"Resistance Level at ${resistance_level:,.2f} used for SL. Support at ${support_level:,.2f} used for TP."
@@ -212,6 +209,14 @@ def update_balance(con, delta):
 
 def execute_auto_trade(con, symbol, timeframe, result, lot_size, candle_ts):
     cursor = con.cursor()
+    # Check if a trade for this exact candle timestamp already exists to prevent duplicate execution on page refresh
+    cursor.execute(
+        "SELECT id FROM brodax_open_trades_v3 WHERE symbol = ? AND timeframe = ? AND candle_timestamp = ?",
+        (symbol, timeframe, str(candle_ts))
+    )
+    if cursor.fetchone():
+        return False, "Trade for this candle already exists!"
+
     created_at_ist = datetime.now(IST).strftime('%Y-%m-%d %I:%M:%S %p IST')
     entry_time_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
     con.execute(
@@ -251,13 +256,22 @@ def check_auto_exit_conditions(con, current_price, timeframe_label):
     cursor.execute("SELECT id, symbol, timeframe, bias, entry_price, stop_loss, take_profit, lot_size, entry_time_utc FROM brodax_open_trades_v3")
     open_trades = cursor.fetchall()
     current_price = float(current_price)
+    now_utc = datetime.now(timezone.utc)
     
     for tid, symbol, tf, bias, entry, sl, tp, lot, entry_time_str in open_trades:
         closed = False
         exit_p = current_price
         reason = "Manual Close 👤"
         
-        if bias == "BUY":
+        try:
+            entry_dt = datetime.strptime(entry_time_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+        except Exception:
+            entry_dt = now_utc
+
+        # 15-Minute Auto-Exit Timer Condition
+        if now_utc - entry_dt >= timedelta(minutes=15):
+            exit_p, reason, closed = current_price, "15-Min Timer Exit ⏱️", True
+        elif bias == "BUY":
             if current_price >= tp:
                 exit_p, reason, closed = tp, "TP Hitter 🎯", True
             elif current_price <= sl:
@@ -272,7 +286,7 @@ def check_auto_exit_conditions(con, current_price, timeframe_label):
             close_single_trade(con, tid, exit_p, reason=reason)
 
 st.title("⚡ BRODAX — Price Lesson Hindi (Bigman2 Expert)")
-st.caption("Video Based S/R Level SL/TP • Supply & Demand • Fib Confluence")
+st.caption("Video Based S/R Level SL/TP • Supply & Demand • Fib Confluence • 15-Min Auto Exit")
 
 con = connect_db()
 
@@ -292,7 +306,7 @@ with st.sidebar:
     st.subheader("⚡ Execution Mode")
     auto_mode = st.toggle("Enable Auto-Pilot Execution", value=False)
     
-    if st.button("➕ Open Brodax Trade", use_container_width=True):
+    if st.button("➕ Open Brodax Trade", use_center_width=True if hasattr(st, 'button') else False): # fallback for standard streamlit
         df_temp, live_p, _ = get_market_data(symbol, timeframe)
         res_temp = evaluate_bigman2_expert_strategy(df_temp, live_p)
         candle_ts = df_temp.index[-1]
@@ -333,7 +347,7 @@ col1.metric("Live Market Price", f"${live_price:,.2f}")
 col2.metric("Bigman2 Bias", result["bias"])
 col3.metric("Bull / Bear Score", f"Bull: {result['bullish']} | Bear: {result['bearish']}")
 
-st.info(f"🟢 **Expert Strategy Status:** Active (Video Based S/R SL/TP) | **Feed:** {feed_source}")
+st.info(f"🟢 **Expert Strategy Status:** Active (15-Min Timer & S/R SL/TP) | **Feed:** {feed_source}")
 
 st.divider()
 
