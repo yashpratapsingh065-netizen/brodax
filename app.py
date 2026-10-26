@@ -102,7 +102,7 @@ def get_market_data(symbol_key, interval_key, limit=50):
             current_price = float(data[info['coingecko_id']]["usd"])
             feed_source = "CoinGecko Live API 🟢"
     except Exception:
-        fluctuation = random.uniform(-0.002, 0.002) * current_price
+        fluctuation = random.uniform(-0.003, 0.003) * current_price
         current_price = round(current_price + fluctuation, 4 if current_price < 10 else 2)
         feed_source = "Live Market Ticker Simulator ⚡"
 
@@ -123,10 +123,10 @@ def evaluate_bigman2_expert_strategy(df, current_price):
     if df.empty or len(df) < 5:
         return {
             "bias": "BUY",
-            "votes": "Support & Demand Zone Rejection + Fib 0.618 Confluence",
-            "bullish": 3,
-            "bearish": 0,
-            "analysis": "Demand Zone Rebound & Discount Zone Accumulation",
+            "votes": "Default Confluence",
+            "bullish": 2,
+            "bearish": 1,
+            "analysis": "Market initializing...",
             "entry": current_price,
             "sl": current_price * 0.99,
             "tp": current_price * 1.025
@@ -138,31 +138,28 @@ def evaluate_bigman2_expert_strategy(df, current_price):
     
     last = df.iloc[-1]
     open_p = float(last['open'])
-    low_p = float(last['low'])
-    high_p = float(last['high'])
-    
-    body = abs(current_price - open_p)
-    lower_wick = min(open_p, current_price) - low_p
-    upper_wick = high_p - max(open_p, current_price)
     
     bullish_votes = []
     bearish_votes = []
     
     if current_price <= equilibrium:
-        bullish_votes.append("Discount Zone (< 0.5 Eq - Cheap Area)")
+        bullish_votes.append("Discount Zone (< 0.5 Eq)")
     else:
-        bearish_votes.append("Premium Zone (> 0.5 Eq - Expensive Area)")
+        bearish_votes.append("Premium Zone (> 0.5 Eq)")
         
     dist_to_support = abs(current_price - support_level)
     dist_to_resistance = abs(current_price - resistance_level)
     
-    if dist_to_support <= dist_to_resistance or lower_wick >= body * 0.2:
-        bullish_votes.append("Demand Zone / Major Support Bounce")
+    if dist_to_support < dist_to_resistance:
+        bullish_votes.append("Closer to Support")
     else:
-        bearish_votes.append("Supply Zone / Resistance Reaction")
+        bearish_votes.append("Closer to Resistance")
         
-    bullish_votes.append("Fibonacci 0.618 Golden Pocket Confluence")
-    
+    if current_price >= open_p:
+        bullish_votes.append("Bullish Momentum")
+    else:
+        bearish_votes.append("Bearish Momentum")
+        
     b_score = len(bullish_votes)
     s_score = len(bearish_votes)
     
@@ -172,16 +169,16 @@ def evaluate_bigman2_expert_strategy(df, current_price):
         sl = round(support_level * 0.995, 2 if current_price > 10 else 4)
         tp = round(resistance_level * 0.995, 2 if current_price > 10 else 4)
         if tp <= current_price:
-            tp = round(current_price * 1.02, 2 if current_price > 10 else 4)
-        analysis = f"Support Level at ${support_level:,.2f} used for SL. Resistance at ${resistance_level:,.2f} used for TP."
+            tp = round(current_price * 1.015, 2 if current_price > 10 else 4)
+        analysis = f"Support at ${support_level:,.2f} (SL) | Resistance at ${resistance_level:,.2f} (TP)"
     else:
         sl = round(resistance_level * 1.005, 2 if current_price > 10 else 4)
         tp = round(support_level * 1.005, 2 if current_price > 10 else 4)
         if tp >= current_price:
-            tp = round(current_price * 0.98, 2 if current_price > 10 else 4)
-        analysis = f"Resistance Level at ${resistance_level:,.2f} used for SL. Support at ${support_level:,.2f} used for TP."
+            tp = round(current_price * 0.985, 2 if current_price > 10 else 4)
+        analysis = f"Resistance at ${resistance_level:,.2f} (SL) | Support at ${support_level:,.2f} (TP)"
         
-    votes_str = f"Bullish Confluence [{b_score}]: {', '.join(bullish_votes)} | Bearish [{s_score}]: {', '.join(bearish_votes)}"
+    votes_str = f"Bullish [{b_score}]: {', '.join(bullish_votes)} | Bearish [{s_score}]: {', '.join(bearish_votes)}"
     
     return {
         "bias": bias,
@@ -207,20 +204,18 @@ def update_balance(con, delta):
     con.commit()
     return new_bal
 
-def execute_auto_trade(con, symbol, timeframe, result, lot_size, candle_ts):
+def execute_auto_trade(con, symbol, timeframe, result, lot_size):
     cursor = con.cursor()
-    cursor.execute(
-        "SELECT id FROM brodax_open_trades_v3 WHERE symbol = ? AND timeframe = ? AND candle_timestamp = ?",
-        (symbol, timeframe, str(candle_ts))
-    )
+    # STRICT CHECK: Agar is symbol par already koi open trade hai, toh dubara trade nahi khulegi
+    cursor.execute("SELECT id FROM brodax_open_trades_v3 WHERE symbol = ?", (symbol,))
     if cursor.fetchone():
-        return False, "Trade for this candle already exists!"
+        return False, "Active trade already exists for this symbol!"
 
     created_at_ist = datetime.now(IST).strftime('%Y-%m-%d %I:%M:%S %p IST')
     entry_time_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
     con.execute(
         "INSERT INTO brodax_open_trades_v3 (created_at_ist, symbol, timeframe, entry_time_utc, entry_price, stop_loss, take_profit, lot_size, bias, strategy_votes, candle_timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (created_at_ist, symbol, timeframe, entry_time_utc, float(result["entry"]), float(result["sl"]), float(result["tp"]), float(lot_size), str(result["bias"]), str(result["votes"]), str(candle_ts))
+        (created_at_ist, symbol, timeframe, entry_time_utc, float(result["entry"]), float(result["sl"]), float(result["tp"]), float(lot_size), str(result["bias"]), str(result["votes"]), "manual")
     )
     con.commit()
     return True, "Trade opened successfully!"
@@ -250,14 +245,14 @@ def close_single_trade(con, trade_id, current_price, reason="Manual Close 👤")
     update_balance(con, pnl_usd)
     return pnl_usd
 
-def check_auto_exit_conditions(con, current_price, timeframe_label):
+def check_auto_exit_conditions(con, current_price):
     cursor = con.cursor()
-    cursor.execute("SELECT id, symbol, timeframe, bias, entry_price, stop_loss, take_profit, lot_size, entry_time_utc FROM brodax_open_trades_v3")
+    cursor.execute("SELECT id, bias, entry_price, stop_loss, take_profit, lot_size, entry_time_utc FROM brodax_open_trades_v3")
     open_trades = cursor.fetchall()
     current_price = float(current_price)
     now_utc = datetime.now(timezone.utc)
     
-    for tid, symbol, tf, bias, entry, sl, tp, lot, entry_time_str in open_trades:
+    for tid, bias, entry, sl, tp, lot, entry_time_str in open_trades:
         closed = False
         exit_p = current_price
         reason = "Manual Close 👤"
@@ -307,8 +302,7 @@ with st.sidebar:
     if st.button("➕ Open Brodax Trade", use_container_width=True):
         df_temp, live_p, _ = get_market_data(symbol, timeframe)
         res_temp = evaluate_bigman2_expert_strategy(df_temp, live_p)
-        candle_ts = df_temp.index[-1]
-        success, msg = execute_auto_trade(con, symbol, timeframe, res_temp, lot_size=lot_input, candle_ts=candle_ts)
+        success, msg = execute_auto_trade(con, symbol, timeframe, res_temp, lot_size=lot_input)
         if success:
             st.sidebar.success("Trade opened successfully!")
             st.rerun()
@@ -330,12 +324,11 @@ with st.sidebar:
 
 df, live_price, feed_source = get_market_data(symbol, timeframe)
 result = evaluate_bigman2_expert_strategy(df, live_price)
-current_candle_ts = df.index[-1]
 
-check_auto_exit_conditions(con, live_price, timeframe)
+check_auto_exit_conditions(con, live_price)
 
 if auto_mode:
-    execute_auto_trade(con, symbol, timeframe, result, lot_size=lot_input, candle_ts=current_candle_ts)
+    execute_auto_trade(con, symbol, timeframe, result, lot_size=lot_input)
 
 curr_balance = get_current_balance(con)
 st.markdown(f"### 💵 Account Balance: **${curr_balance:,.2f} USD**")
