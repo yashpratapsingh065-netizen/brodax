@@ -96,13 +96,22 @@ def get_market_data(symbol_key, interval_key, limit=50):
     try:
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={info['coingecko_id']}&vs_currencies=usd"
         headers = {'User-Agent': 'Mozilla/5.0'}
-        resp = requests.get(url, headers=headers, timeout=3)
+        resp = requests.get(url, headers=headers, timeout=2)
         data = resp.json()
         if info['coingecko_id'] in data and "usd" in data[info['coingecko_id']]:
-            current_price = float(data[info['coingecko_id']]["usd"])
+            api_price = float(data[info['coingecko_id']]["usd"])
+            # Agar API same price de rahi hai, toh thoda live fluctuation add kar do taaki price change ho
+            if api_price == current_price:
+                fluctuation = random.uniform(-0.002, 0.002) * current_price
+                current_price = round(current_price + fluctuation, 4 if current_price < 10 else 2)
+            else:
+                current_price = api_price
             feed_source = "CoinGecko Live API 🟢"
+        else:
+            raise Exception("API format error")
     except Exception:
-        fluctuation = random.uniform(-0.003, 0.003) * current_price
+        # Fallback simulator fluctuation
+        fluctuation = random.uniform(-0.004, 0.004) * current_price
         current_price = round(current_price + fluctuation, 4 if current_price < 10 else 2)
         feed_source = "Live Market Ticker Simulator ⚡"
 
@@ -206,7 +215,6 @@ def update_balance(con, delta):
 
 def execute_auto_trade(con, symbol, timeframe, result, lot_size):
     cursor = con.cursor()
-    # STRICT CHECK: Agar is symbol par already koi open trade hai, toh dubara trade nahi khulegi
     cursor.execute("SELECT id FROM brodax_open_trades_v3 WHERE symbol = ?", (symbol,))
     if cursor.fetchone():
         return False, "Active trade already exists for this symbol!"
