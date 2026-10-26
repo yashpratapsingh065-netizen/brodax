@@ -209,7 +209,6 @@ def update_balance(con, delta):
 
 def execute_auto_trade(con, symbol, timeframe, result, lot_size, candle_ts):
     cursor = con.cursor()
-    # Check if a trade for this exact candle timestamp already exists to prevent duplicate execution on page refresh
     cursor.execute(
         "SELECT id FROM brodax_open_trades_v3 WHERE symbol = ? AND timeframe = ? AND candle_timestamp = ?",
         (symbol, timeframe, str(candle_ts))
@@ -268,7 +267,6 @@ def check_auto_exit_conditions(con, current_price, timeframe_label):
         except Exception:
             entry_dt = now_utc
 
-        # 15-Minute Auto-Exit Timer Condition
         if now_utc - entry_dt >= timedelta(minutes=15):
             exit_p, reason, closed = current_price, "15-Min Timer Exit ⏱️", True
         elif bias == "BUY":
@@ -306,7 +304,7 @@ with st.sidebar:
     st.subheader("⚡ Execution Mode")
     auto_mode = st.toggle("Enable Auto-Pilot Execution", value=False)
     
-    if st.button("➕ Open Brodax Trade", use_center_width=True if hasattr(st, 'button') else False): # fallback for standard streamlit
+    if st.button("➕ Open Brodax Trade", use_container_width=True):
         df_temp, live_p, _ = get_market_data(symbol, timeframe)
         res_temp = evaluate_bigman2_expert_strategy(df_temp, live_p)
         candle_ts = df_temp.index[-1]
@@ -386,7 +384,7 @@ else:
     for index, row in open_df.iterrows():
         with st.expander(f"📌 Trade ID #{row['id']} | {row['symbol']} ({row['bias']} - {row['lot_size']} Lot)"):
             c1, c2 = st.columns(2)
-            c1.markdown(f"🕒 **Entry Time:** `{row['created_at_ist']}`\n📍 **Entry Price:** `${row['entry_price']:,.2f}`\n🛑 **Stop Loss:** `${row['stop_loss']:,.2f}`")
+4            c1.markdown(f"🕒 **Entry Time:** `{row['created_at_ist']}`\n📍 **Entry Price:** `${row['entry_price']:,.2f}`\n🛑 **Stop Loss:** `${row['stop_loss']:,.2f}`")
             c2.markdown(f"🎯 **Take Profit:** `${row['take_profit']:,.2f}`\n⚡ **Status:** `OPEN`\n📊 **Votes:** `{row['strategy_votes']}`")
             if st.button(f"Close Trade #{row['id']} Now", key=f"close_open_{row['id']}"):
                 pnl_realized = close_single_trade(con, row['id'], live_price, reason="Manual Close 👤")
