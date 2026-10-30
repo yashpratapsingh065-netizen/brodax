@@ -151,12 +151,10 @@ def evaluate_brodax_strategy(df, current_price):
             "tp": current_price * 1.025
         }
     
-    # Advanced Price Action & S/R Zones (SMC Premium/Discount Model)
     resistance_level = float(df['high'].max())
     support_level = float(df['low'].min())
     equilibrium = (resistance_level + support_level) / 2.0
     
-    # Trend detection using 10-period moving average of close prices
     ma_10 = df['close'].rolling(window=10).mean().iloc[-1]
     is_uptrend = current_price >= ma_10
     
@@ -166,19 +164,16 @@ def evaluate_brodax_strategy(df, current_price):
     bullish_votes = []
     bearish_votes = []
     
-    # 1. Trend Alignment (Primary filter to avoid counter-trend losses)
     if is_uptrend:
         bullish_votes.append("Trend Alignment (Bullish)")
     else:
         bearish_votes.append("Trend Alignment (Bearish)")
 
-    # 2. Premium / Discount Zone Evaluation (S7 Model)
     if current_price <= equilibrium:
         bullish_votes.append("Discount Zone (< 0.5 Eq)")
     else:
         bearish_votes.append("Premium Zone (> 0.5 Eq)")
         
-    # 3. Price Action Rejection / Momentum
     body = abs(last['close'] - last['open'])
     lower_wick = min(last['open'], last['close']) - last['low']
     upper_wick = last['high'] - max(last['open'], last['close'])
@@ -188,7 +183,6 @@ def evaluate_brodax_strategy(df, current_price):
     elif upper_wick >= body * 1.0 and last['close'] < last['open']:
         bearish_votes.append("Supply Rejection Wick")
 
-    # 4. Recent Momentum Continuation
     if last['close'] > prev['close']:
         bullish_votes.append("Bullish Candle Continuation")
     else:
@@ -197,7 +191,6 @@ def evaluate_brodax_strategy(df, current_price):
     b_score = len(bullish_votes)
     s_score = len(bearish_votes)
     
-    # Strict bias decision with trend preference
     if is_uptrend and b_score >= s_score - 1:
         bias = "BUY"
     elif not is_uptrend and s_score >= b_score - 1:
@@ -208,7 +201,7 @@ def evaluate_brodax_strategy(df, current_price):
     decimals = 2 if current_price > 10 else 4
     if bias == "BUY":
         sl = round(support_level * 0.992, decimals)
-        tp = round(current_price + (current_price - sl) * 1.5, decimals) # 1:1.5 Risk-Reward minimum
+        tp = round(current_price + (current_price - sl) * 1.5, decimals)
         analysis = f"Uptrend / Discount Zone | Support at ${support_level:,.2f} (SL)"
     else:
         sl = round(resistance_level * 1.008, decimals)
@@ -408,4 +401,32 @@ st.divider()
 st.subheader("📋 Active Open Positions")
 open_df = pd.read_sql_query("SELECT * FROM brodax_open_trades_v3 ORDER BY id DESC", con)
 
-(omitted details...)
+if open_df.empty:
+    st.info("Abhi koi open trade nahi hai.")
+else:
+    for index, row in open_df.iterrows():
+        with st.expander(f"📌 Trade ID #{row['id']} | {row['symbol']} ({row['bias']} - {row['lot_size']} Lot)"):
+            c1, c2 = st.columns(2)
+            c1.markdown(f"🕒 **Entry Time:** `{row['created_at_ist']}`\n📍 **Entry Price:** `${row['entry_price']:,.2f}`\n🛑 **Stop Loss:** `${row['stop_loss']:,.2f}`")
+            c2.markdown(f"🎯 **Take Profit:** `${row['take_profit']:,.2f}`\n⚡ **Status:** `OPEN`\n📊 **Votes:** `{row['strategy_votes']}`")
+            if st.button(f"Close Trade #{row['id']} Now", key=f"close_open_{row['id']}"):
+                pnl_realized = close_single_trade(con, row['id'], live_price, reason="Manual Close 👤")
+                st.toast(f"Trade closed! PnL: ${pnl_realized:+.2f}")
+                st.rerun()
+
+st.divider()
+st.subheader("📜 Trade History (Detailed)")
+history_df = pd.read_sql_query("SELECT * FROM brodax_trade_history ORDER BY id DESC LIMIT 50", con)
+
+if history_df.empty:
+    st.info("Abhi tak koi trade history me saved nahi hai.")
+else:
+    for index, row in history_df.iterrows():
+        pnl_color = "🟢" if row['pnl_usd'] >= 0 else "🔴"
+        with st.expander(f"{pnl_color} ID #{row['id']} | {row['symbol']} ({row['bias']}) | PnL: ${row['pnl_usd']:+.2f}"):
+            c1, c2 = st.columns(2)
+            c1.markdown(f"🕒 **Entry Time:** `{row['created_at_ist']}`\n🕒 **Closed Time:** `{row['closed_at_ist']}`\n📍 **Entry Price:** `${row['entry_price']:,.2f}`\n🏁 **Exit Price:** `${row['exit_price']:,.2f}`")
+            c2.markdown(f"🛑 **Stop Loss:** `${row['stop_loss']:,.2f}`\n🎯 **Take Profit:** `${row['take_profit']:,.2f}`\n📦 **Lot Size:** `{row['lot_size']}`\n🏷️ **Exit Reason:** `{row['exit_reason']}`")
+            st.markdown(f"💰 **Realized PnL:** `${row['pnl_usd']:+.2f} USD`\n📊 **Strategy Votes:** `{row['strategy_votes']}`")
+
+con.close()
