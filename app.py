@@ -1,4 +1,3 @@
-
 import os
 import sqlite3
 import random
@@ -8,6 +7,12 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 import requests
+
+# ==================== CREDENTIALS CONFIGURATION ====================
+TWELVE_DATA_API_KEY = "d941e0ca121e4ebc9f9bb40b224a7970"
+DERIV_TOKEN = "pat_d7c04912466579e8714e59fcbe76d1457ffc33b73a8c5b8558cec579b8cfc0d2"
+DERIV_APP_ID = "1089"
+# ===================================================================
 
 # Indian Standard Time (IST) Offset: UTC + 5:30
 IST = timezone(timedelta(hours=5, minutes=30))
