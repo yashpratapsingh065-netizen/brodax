@@ -26,18 +26,18 @@ st.set_page_config(
 DB_PATH = os.getenv("BRODAX_DB_PATH", "brodax_crypto_bot.db")
 
 CRYPTO_SYMBOLS = {
-    "Bitcoin (BTC/USD)": {"binance_symbol": "BTCUSDT", "tv_symbol": "BINANCE:BTCUSDT", "lot": 0.01, "base_p": 91500.0},
-    "Ethereum (ETH/USD)": {"binance_symbol": "ETHUSDT", "tv_symbol": "BINANCE:ETHUSDT", "lot": 0.1, "base_p": 3350.0},
-    "Solana (SOL/USD)": {"binance_symbol": "SOLUSDT", "tv_symbol": "BINANCE:SOLUSDT", "lot": 1.0, "base_p": 195.0},
-    "Ripple (XRP/USD)": {"binance_symbol": "XRPUSDT", "tv_symbol": "BINANCE:XRPUSDT", "lot": 10.0, "base_p": 2.45}
+    "Bitcoin (BTC/USD)": {"twelve_symbol": "BTC/USD", "tv_symbol": "BINANCE:BTCUSDT", "lot": 0.01, "base_p": 91500.0},
+    "Ethereum (ETH/USD)": {"twelve_symbol": "ETH/USD", "tv_symbol": "BINANCE:ETHUSDT", "lot": 0.1, "base_p": 3350.0},
+    "Solana (SOL/USD)": {"twelve_symbol": "SOL/USD", "tv_symbol": "BINANCE:SOLUSDT", "lot": 1.0, "base_p": 195.0},
+    "Ripple (XRP/USD)": {"twelve_symbol": "XRP/USD", "tv_symbol": "BINANCE:XRPUSDT", "lot": 10.0, "base_p": 2.45}
 }
 
 INTERVALS = {
-    "5 min": {"tv_int": "5", "minutes": 5, "pd_freq": "5min"},
-    "15 min": {"tv_int": "15", "minutes": 15, "pd_freq": "15min"},
-    "1 hour": {"tv_int": "60", "minutes": 60, "pd_freq": "1h"},
-    "4 hours": {"tv_int": "240", "minutes": 240, "pd_freq": "4h"},
-    "1 day": {"tv_int": "D", "minutes": 1440, "pd_freq": "1D"}
+    "5 min": {"tv_int": "5", "twelve_int": "5min", "pd_freq": "5min"},
+    "15 min": {"tv_int": "15", "twelve_int": "15min", "pd_freq": "15min"},
+    "1 hour": {"tv_int": "60", "twelve_int": "1h", "pd_freq": "1h"},
+    "4 hours": {"tv_int": "240", "twelve_int": "4h", "pd_freq": "4h"},
+    "1 day": {"tv_int": "D", "twelve_int": "1day", "pd_freq": "1D"}
 }
 
 if 'live_prices' not in st.session_state:
@@ -101,33 +101,43 @@ def get_market_data(symbol_key, interval_key, limit=50):
     feed_source = "Session Market Feed"
     
     try:
-        # Binance Public Live Price API (Exact match with TradingView Binance Chart)
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={info['binance_symbol']}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        resp = requests.get(url, headers=headers, timeout=3)
+        # Twelve Data API Integration for Candlesticks & Live Price
+        url = f"https://api.twelvedata.com/time_series?symbol={info['twelve_symbol']}&interval={cfg['twelve_int']}&outputsize={limit}&apikey={TWELVE_DATA_API_KEY}"
+        resp = requests.get(url, timeout=5)
         data = resp.json()
-        if "price" in data:
-            current_price = float(data["price"])
-            feed_source = "Binance Live API 🟢 (100% Matched with Chart)"
+        
+        if "values" in data:
+            raw_values = data["values"][::-1] # Oldest to newest
+            candles = []
+            for v in raw_values:
+                candles.append({
+                    "datetime": pd.to_datetime(v["datetime"]),
+                    "open": float(v["open"]),
+                    "high": float(v["high"]),
+                    "low": float(v["low"]),
+                    "close": float(v["close"])
+                })
+            df = pd.DataFrame(candles)
+            df.set_index("datetime", inplace=True)
+            current_price = float(df.iloc[-1]["close"])
+            df['datetime_ist'] = df.index.tz_localize('UTC').tz_convert(IST) if df.index.tz is None else df.index.tz_convert(IST)
+            feed_source = "Twelve Data API 🟢 (Live Feed)"
+            st.session_state.live_prices[symbol_key] = current_price
+            return df[['open', 'high', 'low', 'close', 'datetime_ist']], current_price, feed_source
         else:
-            raise Exception("Binance API error")
+            raise Exception("Twelve Data limit or error")
     except Exception:
-        # Fallback simulator agar internet ya API mein issue ho
-        fluctuation = random.uniform(-0.003, 0.003) * current_price
-        current_price = round(current_price + fluctuation, 4 if current_price < 10 else 2)
-        feed_source = "Live Market Ticker Simulator ⚡"
-
-    st.session_state.live_prices[symbol_key] = current_price
-
-    dates = pd.date_range(end=datetime.now(timezone.utc), periods=limit, freq=cfg["pd_freq"])
-    df = pd.DataFrame(index=dates)
-    df['open'] = float(current_price) * 0.999
-    df['high'] = float(current_price) * 1.002
-    df['low'] = float(current_price) * 0.998
-    df['close'] = float(current_price)
-    df.iloc[-1, df.columns.get_loc('close')] = float(current_price)
-    df['datetime_ist'] = df.index.tz_convert(IST)
-    return df[['open', 'high', 'low', 'close', 'datetime_ist']], float(current_price), feed_source
+        # Fallback agar API limit exceed ho ya internet issue ho
+        current_price = st.session_state.live_prices[symbol_key]
+        dates = pd.date_range(end=datetime.now(timezone.utc), periods=limit, freq=cfg["pd_freq"])
+        df = pd.DataFrame(index=dates)
+        df['open'] = float(current_price) * 0.999
+        df['high'] = float(current_price) * 1.002
+        df['low'] = float(current_price) * 0.998
+        df['close'] = float(current_price)
+        df['datetime_ist'] = df.index.tz_convert(IST)
+        feed_source = "Twelve Data Fallback Simulator ⚡"
+        return df[['open', 'high', 'low', 'close', 'datetime_ist']], float(current_price), feed_source
 
 def evaluate_brodax_strategy(df, current_price):
     current_price = float(current_price)
@@ -291,7 +301,7 @@ def check_auto_exits(con, current_price):
 
 # --- STREAMLIT UI ---
 st.title("⚡ BRODAX — Crypto Trading Bot")
-st.caption("S/R Level SL/TP • Supply & Demand • Binance Live Feed • 15-Min Auto Exit")
+st.caption("S/R Level SL/TP • Supply & Demand • Twelve Data Live Feed • 15-Min Auto Exit")
 
 con = connect_db()
 
