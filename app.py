@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 import requests
+from streamlit_autorefresh import st_autorefresh
 
 # ==================== CREDENTIALS CONFIGURATION ====================
 TWELVE_DATA_API_KEY = "d941e0ca121e4ebc9f9bb40b224a7970"
@@ -16,10 +17,13 @@ TWELVE_DATA_API_KEY = "d941e0ca121e4ebc9f9bb40b224a7970"
 IST = timezone(timedelta(hours=5, minutes=30))
 
 st.set_page_config(
-    page_title="BRODAX — Crypto Trading Bot (Expert Edition)",
+    page_title="BRODAX — Crypto Trading Bot (Price Lesson Expert)",
     page_icon="⚡",
     layout="wide"
 )
+
+# Auto-refresh every 10 seconds (10000 milliseconds) for MT5-like live feel
+st_autorefresh(interval=10000, key="brodax_live_ticker")
 
 DB_PATH = os.getenv("BRODAX_DB_PATH", "brodax_crypto_bot.db")
 
@@ -118,7 +122,7 @@ def get_market_data(symbol_key, interval_key, limit=50):
             df.set_index("datetime", inplace=True)
             current_price = float(df.iloc[-1]["close"])
             df['datetime_ist'] = df.index.tz_localize('UTC').tz_convert(IST) if df.index.tz is None else df.index.tz_convert(IST)
-            feed_source = "Twelve Data API 🟢 (Live Feed)"
+            feed_source = "Twelve Data Live Feed 🟢"
             st.session_state.live_prices[symbol_key] = current_price
             return df[['open', 'high', 'low', 'close', 'datetime_ist']], current_price, feed_source
         else:
@@ -132,7 +136,7 @@ def get_market_data(symbol_key, interval_key, limit=50):
         df['low'] = float(current_price) * 0.998
         df['close'] = float(current_price)
         df['datetime_ist'] = df.index.tz_convert(IST)
-        feed_source = "Twelve Data Fallback Simulator ⚡"
+        feed_source = "Simulator Feed ⚡"
         return df[['open', 'high', 'low', 'close', 'datetime_ist']], float(current_price), feed_source
 
 def evaluate_brodax_strategy(df, current_price):
@@ -164,16 +168,19 @@ def evaluate_brodax_strategy(df, current_price):
     bullish_votes = []
     bearish_votes = []
     
+    # Trend Alignment Rule (Price Lesson S1/S3)
     if is_uptrend:
         bullish_votes.append("Trend Alignment (Bullish)")
     else:
         bearish_votes.append("Trend Alignment (Bearish)")
 
+    # Premium / Discount Equilibrium Zone Rule (Price Lesson S7)
     if current_price <= equilibrium:
         bullish_votes.append("Discount Zone (< 0.5 Eq)")
     else:
         bearish_votes.append("Premium Zone (> 0.5 Eq)")
         
+    # Rejection Wicks & Price Action Rules (S2/S6)
     body = abs(last['close'] - last['open'])
     lower_wick = min(last['open'], last['close']) - last['low']
     upper_wick = last['high'] - max(last['open'], last['close'])
@@ -184,13 +191,14 @@ def evaluate_brodax_strategy(df, current_price):
         bearish_votes.append("Supply Rejection Wick")
 
     if last['close'] > prev['close']:
-        bullish_votes.append("Bullish Candle Continuation")
+        bullish_votes.append("Bullish Momentum")
     else:
-        bearish_votes.append("Bearish Candle Continuation")
+        bullish_votes.append("Bearish Momentum")
         
     b_score = len(bullish_votes)
     s_score = len(bearish_votes)
     
+    # Strict score evaluation according to price lesson standards
     if b_score > s_score:
         bias = "BUY"
     elif s_score > b_score:
@@ -202,11 +210,11 @@ def evaluate_brodax_strategy(df, current_price):
     if bias == "BUY":
         sl = round(support_level * 0.992, decimals)
         tp = round(current_price + (current_price - sl) * 1.5, decimals)
-        analysis = f"Uptrend / Discount Zone | Support at ${support_level:,.2f} (SL)"
+        analysis = f"Discount Zone / Uptrend | Support SL at ${support_level:,.2f}"
     else:
         sl = round(resistance_level * 1.008, decimals)
         tp = round(current_price - (sl - current_price) * 1.5, decimals)
-        analysis = f"Downtrend / Premium Zone | Resistance at ${resistance_level:,.2f} (SL)"
+        analysis = f"Premium Zone / Downtrend | Resistance SL at ${resistance_level:,.2f}"
         
     votes_str = f"Bullish [{b_score}]: {', '.join(bullish_votes)} | Bearish [{s_score}]: {', '.join(bearish_votes)}"
     
@@ -289,6 +297,7 @@ def check_auto_exits(con, current_price, current_bias):
         exit_p = current_price
         reason = "Manual Close 👤"
         
+        # Signal Flip Reversal Check (Price Lesson Rule)
         if bias != current_bias:
             exit_p = current_price
             reason = f"Signal Flip Reversal (Changed to {current_bias}) 🔄"
@@ -318,7 +327,7 @@ def check_auto_exits(con, current_price, current_bias):
 
 # --- STREAMLIT UI ---
 st.title("⚡ BRODAX — Crypto Trading Bot")
-st.caption("Signal Flip Reversal Exit • Multi-Trade Enabled • Twelve Data Live Feed")
+st.caption("Price Action & S&D Strategy • Live Auto-Refresh (MT5 Style) • Signal Flip Exit")
 
 con = connect_db()
 
@@ -377,7 +386,7 @@ col1.metric("Live Market Price", f"${live_price:,.2f}" if live_price > 10 else f
 col2.metric("Brodax Bias", result["bias"])
 col3.metric("Bull / Bear Score", f"Bull: {result['bullish']} | Bear: {result['bearish']}")
 
-st.info(f"🟢 **Expert Strategy Status:** Active (Signal Flip Reversal & Multi-Trade) | **Feed:** {feed_source}")
+st.info(f"🟢 **Price Action Status:** Active (Auto-Refresh & Signal Flip) | **Feed:** {feed_source}")
 
 st.divider()
 
@@ -396,7 +405,7 @@ with left:
     components.html(chart_html, height=495, scrolling=False)
 
 with right:
-    st.subheader("💡 Expert Price Analysis (S/R Based)")
+    st.subheader("💡 Expert Price Analysis (Price Lesson Rules)")
     st.write(f"**Market Structure:** {result['analysis']}")
     st.write(f"**Confluence Breakdown:** {result['votes']}")
     st.write(f"**Stop Loss:** `${result['sl']:,.2f}` | **Take Profit:** `${result['tp']:,.2f}`")
@@ -409,8 +418,6 @@ with right:
 st.divider()
 st.subheader("📋 Active Open Positions")
 open_df = pd.read_sql_query("SELECT * FROM brodax_open_trades_v3 ORDER BY id DESC", con)
-
-open_trades_count = len(open_df)
 
 if open_df.empty:
     st.info("Abhi koi open trade nahi hai.")
