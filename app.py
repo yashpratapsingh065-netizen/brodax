@@ -22,7 +22,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Auto-refresh every 10 seconds for MT5-like live feed feel
+# Auto-refresh every 10 seconds for live feel
 st_autorefresh(interval=10000, key="brodax_live_ticker")
 
 DB_PATH = os.getenv("BRODAX_DB_PATH", "brodax_crypto_bot.db")
@@ -154,7 +154,6 @@ def evaluate_brodax_strategy(df, current_price, symbol_key):
             "candle_ts": "init"
         }
     
-    # Higher Timeframe (1h) Trend check for Multi-Timeframe Confluence (Price Lesson S1)
     higher_df, _, _ = get_market_data(symbol_key, "1 hour", limit=50)
     higher_trend_bullish = True
     if not higher_df.empty:
@@ -173,25 +172,21 @@ def evaluate_brodax_strategy(df, current_price, symbol_key):
     bullish_votes = []
     bearish_votes = []
     
-    # 1. Higher Timeframe Alignment
     if higher_trend_bullish:
         bullish_votes.append("Higher TF Trend (Bullish)")
     else:
         bearish_votes.append("Higher TF Trend (Bearish)")
 
-    # 2. Premium & Discount Zone Equilibrium Rule (Price Lesson S7)
     if current_price <= equilibrium:
         bullish_votes.append("Discount Zone (< 0.5 Eq)")
     else:
         bearish_votes.append("Premium Zone (> 0.5 Eq)")
         
-    # 3. Fair Value Gap (FVG) Check (Price Lesson S5-FVG)
     if last.low > p_prev.high and prev.close > prev.open:
         bullish_votes.append("Bullish FVG")
     elif last.high < p_prev.low and prev.close < prev.open:
         bearish_votes.append("Bearish FVG")
 
-    # 4. Rejection Wicks (Supply & Demand Rule)
     body = abs(last['close'] - last['open'])
     lower_wick = min(last['open'], last['close']) - last['low']
     upper_wick = last['high'] - max(last['open'], last['close'])
@@ -204,7 +199,6 @@ def evaluate_brodax_strategy(df, current_price, symbol_key):
     b_score = len(bullish_votes)
     s_score = len(bearish_votes)
     
-    # Strict Decision Based on Confluence Score
     if b_score > s_score:
         bias = "BUY"
     elif s_score > b_score:
@@ -251,17 +245,23 @@ def update_balance(con, delta):
 
 def execute_brodax_trade(con, symbol, timeframe, result, lot_size):
     cursor = con.cursor()
-    candle_ts = result["candle_ts"]
+    candle_ts = str(result["candle_ts"])
+    bias = result["bias"]
     
+    # Strict Duplicate Protection Checks
     cursor.execute("SELECT id FROM brodax_open_trades_v3 WHERE symbol = ? AND candle_timestamp = ?", (symbol, candle_ts))
     if cursor.fetchone():
-        return False, "Trade already exists for this candle timestamp!"
+        return False, "Duplicate trade blocked for this candle timestamp!"
+
+    cursor.execute("SELECT id FROM brodax_open_trades_v3 WHERE symbol = ? AND bias = ?", (symbol, bias))
+    if cursor.fetchone():
+        return False, "Duplicate trade blocked: Active trade with same bias exists!"
 
     created_at_ist = datetime.now(IST).strftime('%Y-%m-%d %I:%M:%S %p IST')
     entry_time_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
     con.execute(
         "INSERT INTO brodax_open_trades_v3 (created_at_ist, symbol, timeframe, entry_time_utc, entry_price, stop_loss, take_profit, lot_size, bias, strategy_votes, candle_timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (created_at_ist, symbol, timeframe, entry_time_utc, float(result["entry"]), float(result["sl"]), float(result["tp"]), float(lot_size), str(result["bias"]), str(result["votes"]), candle_ts)
+        (created_at_ist, symbol, timeframe, entry_time_utc, float(result["entry"]), float(result["sl"]), float(result["tp"]), float(lot_size), str(bias), str(result["votes"]), candle_ts)
     )
     con.commit()
     return True, "Trade opened successfully!"
@@ -303,7 +303,6 @@ def check_auto_exits(con, current_price, current_bias):
         exit_p = current_price
         reason = "Manual Close 👤"
         
-        # Signal Flip Reversal Check
         if bias != current_bias:
             exit_p = current_price
             reason = f"Signal Flip Reversal (Changed to {current_bias}) 🔄"
@@ -392,7 +391,7 @@ col1.metric("Live Market Price", f"${live_price:,.2f}" if live_price > 10 else f
 col2.metric("Brodax Bias", result["bias"])
 col3.metric("Bull / Bear Score", f"Bull: {result['bullish']} | Bear: {result['bearish']}")
 
-st.info(f"🟢 **Strategy Status:** Active (Multi-TF + S&D + Auto-Refresh) | **Feed:** {feed_source}")
+st.info(f"🟢 **Strategy Status:** Active (Anti-Duplicate & Multi-TF) | **Feed:** {feed_source}")
 
 st.divider()
 
