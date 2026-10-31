@@ -22,7 +22,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Auto-refresh every 10 seconds (10000 milliseconds) for MT5-like live feel
+# Auto-refresh every 10 seconds for MT5-like live feed feel
 st_autorefresh(interval=10000, key="brodax_live_ticker")
 
 DB_PATH = os.getenv("BRODAX_DB_PATH", "brodax_crypto_bot.db")
@@ -95,7 +95,7 @@ def connect_db():
     con.commit()
     return con
 
-def get_market_data(symbol_key, interval_key, limit=50):
+def get_market_data(symbol_key, interval_key, limit=100):
     info = CRYPTO_SYMBOLS[symbol_key]
     cfg = INTERVALS[interval_key]
     
@@ -139,48 +139,59 @@ def get_market_data(symbol_key, interval_key, limit=50):
         feed_source = "Simulator Feed ⚡"
         return df[['open', 'high', 'low', 'close', 'datetime_ist']], float(current_price), feed_source
 
-def evaluate_brodax_strategy(df, current_price):
+def evaluate_brodax_strategy(df, current_price, symbol_key):
     current_price = float(current_price)
-    if df.empty or len(df) < 10:
+    if df.empty or len(df) < 20:
         return {
             "bias": "BUY",
-            "votes": "Default Confluence",
-            "bullish": 2,
-            "bearish": 1,
-            "analysis": "Market initializing...",
+            "votes": "Initializing...",
+            "bullish": 1,
+            "bearish": 0,
+            "analysis": "Gathering price action data...",
             "entry": current_price,
             "sl": current_price * 0.99,
-            "tp": current_price * 1.025,
+            "tp": current_price * 1.02,
             "candle_ts": "init"
         }
     
+    # Higher Timeframe (1h) Trend check for Multi-Timeframe Confluence (Price Lesson S1)
+    higher_df, _, _ = get_market_data(symbol_key, "1 hour", limit=50)
+    higher_trend_bullish = True
+    if not higher_df.empty:
+        h_ma = higher_df['close'].rolling(window=20).mean().iloc[-1]
+        higher_trend_bullish = float(higher_df['close'].iloc[-1]) >= h_ma
+
     resistance_level = float(df['high'].max())
     support_level = float(df['low'].min())
     equilibrium = (resistance_level + support_level) / 2.0
     
-    ma_10 = df['close'].rolling(window=10).mean().iloc[-1]
-    is_uptrend = current_price >= ma_10
-    
     last = df.iloc[-1]
     prev = df.iloc[-2]
+    p_prev = df.iloc[-3]
     candle_ts = str(df.index[-1])
     
     bullish_votes = []
     bearish_votes = []
     
-    # Trend Alignment Rule (Price Lesson S1/S3)
-    if is_uptrend:
-        bullish_votes.append("Trend Alignment (Bullish)")
+    # 1. Higher Timeframe Alignment
+    if higher_trend_bullish:
+        bullish_votes.append("Higher TF Trend (Bullish)")
     else:
-        bearish_votes.append("Trend Alignment (Bearish)")
+        bearish_votes.append("Higher TF Trend (Bearish)")
 
-    # Premium / Discount Equilibrium Zone Rule (Price Lesson S7)
+    # 2. Premium & Discount Zone Equilibrium Rule (Price Lesson S7)
     if current_price <= equilibrium:
         bullish_votes.append("Discount Zone (< 0.5 Eq)")
     else:
         bearish_votes.append("Premium Zone (> 0.5 Eq)")
         
-    # Rejection Wicks & Price Action Rules (S2/S6)
+    # 3. Fair Value Gap (FVG) Check (Price Lesson S5-FVG)
+    if last.low > p_prev.high and prev.close > prev.open:
+        bullish_votes.append("Bullish FVG")
+    elif last.high < p_prev.low and prev.close < prev.open:
+        bearish_votes.append("Bearish FVG")
+
+    # 4. Rejection Wicks (Supply & Demand Rule)
     body = abs(last['close'] - last['open'])
     lower_wick = min(last['open'], last['close']) - last['low']
     upper_wick = last['high'] - max(last['open'], last['close'])
@@ -189,16 +200,11 @@ def evaluate_brodax_strategy(df, current_price):
         bullish_votes.append("Demand Rejection Wick")
     elif upper_wick >= body * 1.0 and last['close'] < last['open']:
         bearish_votes.append("Supply Rejection Wick")
-
-    if last['close'] > prev['close']:
-        bullish_votes.append("Bullish Momentum")
-    else:
-        bullish_votes.append("Bearish Momentum")
         
     b_score = len(bullish_votes)
     s_score = len(bearish_votes)
     
-    # Strict score evaluation according to price lesson standards
+    # Strict Decision Based on Confluence Score
     if b_score > s_score:
         bias = "BUY"
     elif s_score > b_score:
@@ -209,12 +215,12 @@ def evaluate_brodax_strategy(df, current_price):
     decimals = 2 if current_price > 10 else 4
     if bias == "BUY":
         sl = round(support_level * 0.992, decimals)
-        tp = round(current_price + (current_price - sl) * 1.5, decimals)
-        analysis = f"Discount Zone / Uptrend | Support SL at ${support_level:,.2f}"
+        tp = round(current_price + (current_price - sl) * 1.8, decimals)
+        analysis = f"Discount Zone / Higher TF Aligned | Support SL: ${support_level:,.2f}"
     else:
         sl = round(resistance_level * 1.008, decimals)
-        tp = round(current_price - (sl - current_price) * 1.5, decimals)
-        analysis = f"Premium Zone / Downtrend | Resistance SL at ${resistance_level:,.2f}"
+        tp = round(current_price - (sl - current_price) * 1.8, decimals)
+        analysis = f"Premium Zone / Higher TF Aligned | Resistance SL: ${resistance_level:,.2f}"
         
     votes_str = f"Bullish [{b_score}]: {', '.join(bullish_votes)} | Bearish [{s_score}]: {', '.join(bearish_votes)}"
     
@@ -249,7 +255,7 @@ def execute_brodax_trade(con, symbol, timeframe, result, lot_size):
     
     cursor.execute("SELECT id FROM brodax_open_trades_v3 WHERE symbol = ? AND candle_timestamp = ?", (symbol, candle_ts))
     if cursor.fetchone():
-        return False, "Trade already exists for this specific candle timestamp!"
+        return False, "Trade already exists for this candle timestamp!"
 
     created_at_ist = datetime.now(IST).strftime('%Y-%m-%d %I:%M:%S %p IST')
     entry_time_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
@@ -297,7 +303,7 @@ def check_auto_exits(con, current_price, current_bias):
         exit_p = current_price
         reason = "Manual Close 👤"
         
-        # Signal Flip Reversal Check (Price Lesson Rule)
+        # Signal Flip Reversal Check
         if bias != current_bias:
             exit_p = current_price
             reason = f"Signal Flip Reversal (Changed to {current_bias}) 🔄"
@@ -326,13 +332,13 @@ def check_auto_exits(con, current_price, current_bias):
             close_single_trade(con, tid, exit_p, reason=reason)
 
 # --- STREAMLIT UI ---
-st.title("⚡ BRODAX — Crypto Trading Bot")
-st.caption("Price Action & S&D Strategy • Live Auto-Refresh (MT5 Style) • Signal Flip Exit")
+st.title("⚡ BRODAX — Price Action Master Bot")
+st.caption("Multi-Timeframe Trend Filter • S&D Equilibrium • Live Auto-Refresh")
 
 con = connect_db()
 
 with st.sidebar:
-    st.header("⚙️ Brodax Control Panel")
+    st.header("⚙️ Control Panel")
     symbol = st.selectbox("Select Crypto Asset", list(CRYPTO_SYMBOLS.keys()), index=0)
     timeframe = st.selectbox("Timeframe", list(INTERVALS.keys()), index=1)
     
@@ -349,7 +355,7 @@ with st.sidebar:
     
     if st.button("➕ Open Brodax Trade", use_container_width=True):
         df_temp, live_p, _ = get_market_data(symbol, timeframe)
-        res_temp = evaluate_brodax_strategy(df_temp, live_p)
+        res_temp = evaluate_brodax_strategy(df_temp, live_p, symbol)
         success, msg = execute_brodax_trade(con, symbol, timeframe, res_temp, lot_size=lot_input)
         if success:
             st.sidebar.success("Trade opened successfully!")
@@ -371,7 +377,7 @@ with st.sidebar:
         st.rerun()
 
 df, live_price, feed_source = get_market_data(symbol, timeframe)
-result = evaluate_brodax_strategy(df, live_price)
+result = evaluate_brodax_strategy(df, live_price, symbol)
 
 check_auto_exits(con, live_price, result["bias"])
 
@@ -386,7 +392,7 @@ col1.metric("Live Market Price", f"${live_price:,.2f}" if live_price > 10 else f
 col2.metric("Brodax Bias", result["bias"])
 col3.metric("Bull / Bear Score", f"Bull: {result['bullish']} | Bear: {result['bearish']}")
 
-st.info(f"🟢 **Price Action Status:** Active (Auto-Refresh & Signal Flip) | **Feed:** {feed_source}")
+st.info(f"🟢 **Strategy Status:** Active (Multi-TF + S&D + Auto-Refresh) | **Feed:** {feed_source}")
 
 st.divider()
 
