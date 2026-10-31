@@ -10,15 +10,13 @@ import requests
 
 # ==================== CREDENTIALS CONFIGURATION ====================
 TWELVE_DATA_API_KEY = "d941e0ca121e4ebc9f9bb40b224a7970"
-DERIV_TOKEN = "pat_d7c04912466579e8714e59fcbe76d1457ffc33b73a8c5b8558cec579b8cfc0d2"
-DERIV_APP_ID = "1089"
 # ===================================================================
 
 # Indian Standard Time (IST) Offset: UTC + 5:30
 IST = timezone(timedelta(hours=5, minutes=30))
 
 st.set_page_config(
-    page_title="BRODAX — Crypto Trading Bot (Bigman2 Expert)",
+    page_title="BRODAX — Crypto Trading Bot (Expert Edition)",
     page_icon="⚡",
     layout="wide"
 )
@@ -193,7 +191,6 @@ def evaluate_brodax_strategy(df, current_price):
     b_score = len(bullish_votes)
     s_score = len(bearish_votes)
     
-    # Strict score decision
     if b_score > s_score:
         bias = "BUY"
     elif s_score > b_score:
@@ -292,13 +289,10 @@ def check_auto_exits(con, current_price, current_bias):
         exit_p = current_price
         reason = "Manual Close 👤"
         
-        # 1. SIGNAL FLIP REVERSAL CHECK (Turant exit agar signal opposite ho jaye)
         if bias != current_bias:
             exit_p = current_price
             reason = f"Signal Flip Reversal (Changed to {current_bias}) 🔄"
             closed = True
-        
-        # 2. Standard SL / TP checks
         elif bias == "BUY":
             if current_price >= tp:
                 exit_p, reason, closed = tp, "TP Hitter 🎯", True
@@ -310,7 +304,6 @@ def check_auto_exits(con, current_price, current_bias):
             elif current_price >= sl:
                 exit_p, reason, closed = sl, "SL Hitter 🛑", True
                 
-        # 3. 15-min timer check
         if not closed:
             try:
                 entry_dt = datetime.strptime(entry_time_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
@@ -325,7 +318,7 @@ def check_auto_exits(con, current_price, current_bias):
 
 # --- STREAMLIT UI ---
 st.title("⚡ BRODAX — Crypto Trading Bot")
-st.caption("Signal Flip Reversal Exit • Multiple Positions per Candle • Twelve Data Live Feed")
+st.caption("Signal Flip Reversal Exit • Multi-Trade Enabled • Twelve Data Live Feed")
 
 con = connect_db()
 
@@ -371,7 +364,6 @@ with st.sidebar:
 df, live_price, feed_source = get_market_data(symbol, timeframe)
 result = evaluate_brodax_strategy(df, live_price)
 
-# Check auto exits including Signal Flip Reversal
 check_auto_exits(con, live_price, result["bias"])
 
 if auto_mode:
@@ -417,6 +409,8 @@ with right:
 st.divider()
 st.subheader("📋 Active Open Positions")
 open_df = pd.read_sql_query("SELECT * FROM brodax_open_trades_v3 ORDER BY id DESC", con)
+
+open_trades_count = len(open_df)
 
 if open_df.empty:
     st.info("Abhi koi open trade nahi hai.")
