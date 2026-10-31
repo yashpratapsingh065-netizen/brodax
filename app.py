@@ -148,7 +148,8 @@ def evaluate_brodax_strategy(df, current_price):
             "analysis": "Market initializing...",
             "entry": current_price,
             "sl": current_price * 0.99,
-            "tp": current_price * 1.025
+            "tp": current_price * 1.025,
+            "candle_ts": "init"
         }
     
     resistance_level = float(df['high'].max())
@@ -160,6 +161,7 @@ def evaluate_brodax_strategy(df, current_price):
     
     last = df.iloc[-1]
     prev = df.iloc[-2]
+    candle_ts = str(df.index[-1])
     
     bullish_votes = []
     bearish_votes = []
@@ -191,12 +193,13 @@ def evaluate_brodax_strategy(df, current_price):
     b_score = len(bullish_votes)
     s_score = len(bearish_votes)
     
-    if is_uptrend and b_score >= s_score - 1:
+    # Strict score decision
+    if b_score > s_score:
         bias = "BUY"
-    elif not is_uptrend and s_score >= b_score - 1:
+    elif s_score > b_score:
         bias = "SELL"
     else:
-        bias = "BUY" if b_score > s_score else "SELL"
+        bias = "BUY" if last['close'] >= last['open'] else "SELL"
     
     decimals = 2 if current_price > 10 else 4
     if bias == "BUY":
@@ -218,7 +221,8 @@ def evaluate_brodax_strategy(df, current_price):
         "analysis": analysis,
         "entry": round(current_price, decimals),
         "sl": sl,
-        "tp": tp
+        "tp": tp,
+        "candle_ts": candle_ts
     }
 
 def get_current_balance(con):
@@ -236,15 +240,17 @@ def update_balance(con, delta):
 
 def execute_brodax_trade(con, symbol, timeframe, result, lot_size):
     cursor = con.cursor()
-    cursor.execute("SELECT id FROM brodax_open_trades_v3 WHERE symbol = ?", (symbol,))
+    candle_ts = result["candle_ts"]
+    
+    cursor.execute("SELECT id FROM brodax_open_trades_v3 WHERE symbol = ? AND candle_timestamp = ?", (symbol, candle_ts))
     if cursor.fetchone():
-        return False, "Active trade already exists for this symbol!"
+        return False, "Trade already exists for this specific candle timestamp!"
 
     created_at_ist = datetime.now(IST).strftime('%Y-%m-%d %I:%M:%S %p IST')
     entry_time_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
     con.execute(
         "INSERT INTO brodax_open_trades_v3 (created_at_ist, symbol, timeframe, entry_time_utc, entry_price, stop_loss, take_profit, lot_size, bias, strategy_votes, candle_timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (created_at_ist, symbol, timeframe, entry_time_utc, float(result["entry"]), float(result["sl"]), float(result["tp"]), float(lot_size), str(result["bias"]), str(result["votes"]), "manual")
+        (created_at_ist, symbol, timeframe, entry_time_utc, float(result["entry"]), float(result["sl"]), float(result["tp"]), float(lot_size), str(result["bias"]), str(result["votes"]), candle_ts)
     )
     con.commit()
     return True, "Trade opened successfully!"
@@ -274,7 +280,7 @@ def close_single_trade(con, trade_id, current_price, reason="Manual Close 👤")
     update_balance(con, pnl_usd)
     return pnl_usd
 
-def check_auto_exits(con, current_price):
+def check_auto_exits(con, current_price, current_bias):
     cursor = con.cursor()
     cursor.execute("SELECT id, bias, entry_price, stop_loss, take_profit, lot_size, entry_time_utc FROM brodax_open_trades_v3")
     open_trades = cursor.fetchall()
@@ -286,13 +292,13 @@ def check_auto_exits(con, current_price):
         exit_p = current_price
         reason = "Manual Close 👤"
         
-        try:
-            entry_dt = datetime.strptime(entry_time_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
-        except Exception:
-            entry_dt = now_utc
-
-        if now_utc - entry_dt >= timedelta(minutes=15):
-            exit_p, reason, closed = current_price, "15-Min Timer Exit ⏱️", True
+        # 1. SIGNAL FLIP REVERSAL CHECK (Turant exit agar signal opposite ho jaye)
+        if bias != current_bias:
+            exit_p = current_price
+            reason = f"Signal Flip Reversal (Changed to {current_bias}) 🔄"
+            closed = True
+        
+        # 2. Standard SL / TP checks
         elif bias == "BUY":
             if current_price >= tp:
                 exit_p, reason, closed = tp, "TP Hitter 🎯", True
@@ -304,12 +310,22 @@ def check_auto_exits(con, current_price):
             elif current_price >= sl:
                 exit_p, reason, closed = sl, "SL Hitter 🛑", True
                 
+        # 3. 15-min timer check
+        if not closed:
+            try:
+                entry_dt = datetime.strptime(entry_time_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+            except Exception:
+                entry_dt = now_utc
+
+            if now_utc - entry_dt >= timedelta(minutes=15):
+                exit_p, reason, closed = current_price, "15-Min Timer Exit ⏱️", True
+                
         if closed:
             close_single_trade(con, tid, exit_p, reason=reason)
 
 # --- STREAMLIT UI ---
 st.title("⚡ BRODAX — Crypto Trading Bot")
-st.caption("S/R Level SL/TP • Supply & Demand • Twelve Data Live Feed • 15-Min Auto Exit")
+st.caption("Signal Flip Reversal Exit • Multiple Positions per Candle • Twelve Data Live Feed")
 
 con = connect_db()
 
@@ -355,7 +371,8 @@ with st.sidebar:
 df, live_price, feed_source = get_market_data(symbol, timeframe)
 result = evaluate_brodax_strategy(df, live_price)
 
-check_auto_exits(con, live_price)
+# Check auto exits including Signal Flip Reversal
+check_auto_exits(con, live_price, result["bias"])
 
 if auto_mode:
     execute_brodax_trade(con, symbol, timeframe, result, lot_size=lot_input)
@@ -368,7 +385,7 @@ col1.metric("Live Market Price", f"${live_price:,.2f}" if live_price > 10 else f
 col2.metric("Brodax Bias", result["bias"])
 col3.metric("Bull / Bear Score", f"Bull: {result['bullish']} | Bear: {result['bearish']}")
 
-st.info(f"🟢 **Expert Strategy Status:** Active (15-Min Timer & S/R SL/TP) | **Feed:** {feed_source}")
+st.info(f"🟢 **Expert Strategy Status:** Active (Signal Flip Reversal & Multi-Trade) | **Feed:** {feed_source}")
 
 st.divider()
 
