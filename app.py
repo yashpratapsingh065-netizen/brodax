@@ -28,18 +28,18 @@ st_autorefresh(interval=10000, key="brodax_live_ticker")
 DB_PATH = os.getenv("BRODAX_DB_PATH", "brodax_crypto_bot.db")
 
 CRYPTO_SYMBOLS = {
-    "Bitcoin (BTC/USD)": {"twelve_symbol": "BTC/USD", "tv_symbol": "BINANCE:BTCUSDT", "lot": 0.01, "base_p": 91500.0},
-    "Ethereum (ETH/USD)": {"twelve_symbol": "ETH/USD", "tv_symbol": "BINANCE:ETHUSDT", "lot": 0.1, "base_p": 3350.0},
-    "Solana (SOL/USD)": {"twelve_symbol": "SOL/USD", "tv_symbol": "BINANCE:SOLUSDT", "lot": 1.0, "base_p": 195.0},
-    "Ripple (XRP/USD)": {"twelve_symbol": "XRP/USD", "tv_symbol": "BINANCE:XRPUSDT", "lot": 10.0, "base_p": 2.45}
+    "Bitcoin (BTC/USD)": {"binance_symbol": "BTCUSDT", "twelve_symbol": "BTC/USD", "tv_symbol": "BINANCE:BTCUSDT", "lot": 0.01, "base_p": 91500.0},
+    "Ethereum (ETH/USD)": {"binance_symbol": "ETHUSDT", "twelve_symbol": "ETH/USD", "tv_symbol": "BINANCE:ETHUSDT", "lot": 0.1, "base_p": 3350.0},
+    "Solana (SOL/USD)": {"binance_symbol": "SOLUSDT", "twelve_symbol": "SOL/USD", "tv_symbol": "BINANCE:SOLUSDT", "lot": 1.0, "base_p": 195.0},
+    "Ripple (XRP/USD)": {"binance_symbol": "XRPUSDT", "twelve_symbol": "XRP/USD", "tv_symbol": "BINANCE:XRPUSDT", "lot": 10.0, "base_p": 2.45}
 }
 
 INTERVALS = {
-    "5 min": {"tv_int": "5", "twelve_int": "5min", "pd_freq": "5min"},
-    "15 min": {"tv_int": "15", "twelve_int": "15min", "pd_freq": "15min"},
-    "1 hour": {"tv_int": "60", "twelve_int": "1h", "pd_freq": "1h"},
-    "4 hours": {"tv_int": "240", "twelve_int": "4h", "pd_freq": "4h"},
-    "1 day": {"tv_int": "D", "twelve_int": "1day", "pd_freq": "1D"}
+    "5 min": {"tv_int": "5", "twelve_int": "5min", "binance_int": "5m", "pd_freq": "5min"},
+    "15 min": {"tv_int": "15", "twelve_int": "15min", "binance_int": "15m", "pd_freq": "15min"},
+    "1 hour": {"tv_int": "60", "twelve_int": "1h", "binance_int": "1h", "pd_freq": "1h"},
+    "4 hours": {"tv_int": "240", "twelve_int": "4h", "binance_int": "4h", "pd_freq": "4h"},
+    "1 day": {"tv_int": "D", "twelve_int": "1day", "binance_int": "1d", "pd_freq": "1D"}
 }
 
 if 'live_prices' not in st.session_state:
@@ -102,6 +102,33 @@ def get_market_data(symbol_key, interval_key, limit=100):
     current_price = st.session_state.live_prices[symbol_key]
     feed_source = "Session Market Feed"
     
+    # 1. Try Binance Public API (Real-time, matches TradingView Binance charts perfectly)
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={info['binance_symbol']}&interval={cfg['binance_int']}&limit={limit}"
+        resp = requests.get(url, timeout=5)
+        data = resp.json()
+        
+        if isinstance(data, list) and len(data) > 0:
+            candles = []
+            for row in data:
+                candles.append({
+                    "datetime": pd.to_datetime(row[0], unit='ms'),
+                    "open": float(row[1]),
+                    "high": float(row[2]),
+                    "low": float(row[3]),
+                    "close": float(row[4])
+                })
+            df = pd.DataFrame(candles)
+            df.set_index("datetime", inplace=True)
+            current_price = float(df.iloc[-1]["close"])
+            df['datetime_ist'] = df.index.tz_localize('UTC').tz_convert(IST) if df.index.tz is None else df.index.tz_convert(IST)
+            feed_source = "Binance Live Feed 🟢 (Real-Time)"
+            st.session_state.live_prices[symbol_key] = current_price
+            return df[['open', 'high', 'low', 'close', 'datetime_ist']], current_price, feed_source
+    except Exception:
+        pass
+
+    # 2. Try Twelve Data API as Backup
     try:
         url = f"https://api.twelvedata.com/time_series?symbol={info['twelve_symbol']}&interval={cfg['twelve_int']}&outputsize={limit}&apikey={TWELVE_DATA_API_KEY}"
         resp = requests.get(url, timeout=5)
@@ -122,22 +149,23 @@ def get_market_data(symbol_key, interval_key, limit=100):
             df.set_index("datetime", inplace=True)
             current_price = float(df.iloc[-1]["close"])
             df['datetime_ist'] = df.index.tz_localize('UTC').tz_convert(IST) if df.index.tz is None else df.index.tz_convert(IST)
-            feed_source = "Twelve Data Live Feed 🟢"
+            feed_source = "Twelve Data Live Feed 🟡"
             st.session_state.live_prices[symbol_key] = current_price
             return df[['open', 'high', 'low', 'close', 'datetime_ist']], current_price, feed_source
-        else:
-            raise Exception("Twelve Data limit or error")
     except Exception:
-        current_price = st.session_state.live_prices[symbol_key]
-        dates = pd.date_range(end=datetime.now(timezone.utc), periods=limit, freq=cfg["pd_freq"])
-        df = pd.DataFrame(index=dates)
-        df['open'] = float(current_price) * 0.999
-        df['high'] = float(current_price) * 1.002
-        df['low'] = float(current_price) * 0.998
-        df['close'] = float(current_price)
-        df['datetime_ist'] = df.index.tz_convert(IST)
-        feed_source = "Simulator Feed ⚡"
-        return df[['open', 'high', 'low', 'close', 'datetime_ist']], float(current_price), feed_source
+        pass
+
+    # 3. Simulator Feed Fallback
+    current_price = st.session_state.live_prices[symbol_key]
+    dates = pd.date_range(end=datetime.now(timezone.utc), periods=limit, freq=cfg["pd_freq"])
+    df = pd.DataFrame(index=dates)
+    df['open'] = float(current_price) * 0.999
+    df['high'] = float(current_price) * 1.002
+    df['low'] = float(current_price) * 0.998
+    df['close'] = float(current_price)
+    df['datetime_ist'] = df.index.tz_convert(IST)
+    feed_source = "Simulator Feed ⚡"
+    return df[['open', 'high', 'low', 'close', 'datetime_ist']], float(current_price), feed_source
 
 def evaluate_brodax_strategy(df, current_price, symbol_key):
     current_price = float(current_price)
@@ -248,7 +276,6 @@ def execute_brodax_trade(con, symbol, timeframe, result, lot_size):
     candle_ts = str(result["candle_ts"])
     bias = result["bias"]
     
-    # Strict Duplicate Protection Checks
     cursor.execute("SELECT id FROM brodax_open_trades_v3 WHERE symbol = ? AND candle_timestamp = ?", (symbol, candle_ts))
     if cursor.fetchone():
         return False, "Duplicate trade blocked for this candle timestamp!"
