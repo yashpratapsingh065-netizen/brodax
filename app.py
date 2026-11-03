@@ -89,7 +89,6 @@ def connect_db():
 
 @st.cache_data(ttl=5)
 def get_live_binance_price(binance_symbol):
-    """Fetches real-time spot price directly from Binance public ticker API with a short 5-second cache."""
     try:
         url = f"https://api.binance.com/api/v3/ticker/price?symbol={binance_symbol}"
         resp = requests.get(url, timeout=3)
@@ -104,10 +103,8 @@ def get_market_data(symbol_key, interval_key, limit=100):
     info = CRYPTO_SYMBOLS[symbol_key]
     cfg = INTERVALS[interval_key]
     
-    # Get instant real-time price first
     rt_price, feed_source = get_live_binance_price(info["binance_symbol"])
     
-    # 1. Fetch historical candles from Binance Klines for Strategy & Chart Data
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol={info['binance_symbol']}&interval={cfg['binance_int']}&limit={limit}"
         resp = requests.get(url, timeout=5)
@@ -126,7 +123,6 @@ def get_market_data(symbol_key, interval_key, limit=100):
             df = pd.DataFrame(candles)
             df.set_index("datetime", inplace=True)
             
-            # Override latest close with absolute real-time ticker price if available
             if rt_price is not None:
                 df.iloc[-1, df.columns.get_loc("close")] = rt_price
                 if rt_price > df.iloc[-1]["high"]:
@@ -143,7 +139,6 @@ def get_market_data(symbol_key, interval_key, limit=100):
     except Exception:
         pass
 
-    # 2. Fallback to Twelve Data API if Binance fails
     try:
         url = f"https://api.twelvedata.com/time_series?symbol={info['twelve_symbol']}&interval={cfg['twelve_int']}&outputsize={limit}&apikey={TWELVE_DATA_API_KEY}"
         resp = requests.get(url, timeout=5)
@@ -168,7 +163,6 @@ def get_market_data(symbol_key, interval_key, limit=100):
     except Exception:
         pass
 
-    # 3. Ultimate Fallback
     fallback_p = rt_price if rt_price else info["base_p"]
     dates = pd.date_range(end=datetime.now(timezone.utc), periods=limit, freq=cfg["pd_freq"])
     df = pd.DataFrame(index=dates)
@@ -383,7 +377,8 @@ with st.sidebar:
     default_lot = CRYPTO_SYMBOLS[symbol]["lot"]
     lot_input = st.number_input("Trade Lot Size", min_value=0.001, max_value=50.0, value=default_lot, step=0.001)
     
-    if st.button("🔄 Refresh Data Now", use_icon=True, use_container_width=True):
+    # Fixed: Removed invalid use_icon parameter
+    if st.button("🔄 Refresh Data Now", use_container_width=True):
         st.rerun()
 
     st.markdown("---")
