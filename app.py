@@ -1,13 +1,11 @@
 import os
 import sqlite3
-import random
 from datetime import datetime, timezone, timedelta
 
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 import requests
-from streamlit_autorefresh import st_autorefresh
 
 # ==================== CREDENTIALS CONFIGURATION ====================
 TWELVE_DATA_API_KEY = "d941e0ca121e4ebc9f9bb40b224a7970"
@@ -21,9 +19,6 @@ st.set_page_config(
     page_icon="⚡",
     layout="wide"
 )
-
-# Auto-refresh every 10 seconds for live feel
-st_autorefresh(interval=10000, key="brodax_live_ticker")
 
 DB_PATH = os.getenv("BRODAX_DB_PATH", "brodax_crypto_bot.db")
 
@@ -42,13 +37,10 @@ INTERVALS = {
     "1 day": {"tv_int": "D", "twelve_int": "1day", "binance_int": "1d", "pd_freq": "1D"}
 }
 
-if 'live_prices' not in st.session_state:
-    st.session_state.live_prices = {k: v["base_p"] for k, v in CRYPTO_SYMBOLS.items()}
-
 def connect_db():
     con = sqlite3.connect(DB_PATH, check_same_thread=False)
     con.execute("""
-        CREATE TABLE IF NOT EXISTS brodax_open_trades_v3 (
+        CREATE TABLE IF NOT EXISTS brodax_open_trades_v4 (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at_ist TEXT NOT NULL,
             symbol TEXT NOT NULL,
@@ -95,14 +87,27 @@ def connect_db():
     con.commit()
     return con
 
+@st.cache_data(ttl=5)
+def get_live_binance_price(binance_symbol):
+    """Fetches real-time spot price directly from Binance public ticker API with a short 5-second cache."""
+    try:
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={binance_symbol}"
+        resp = requests.get(url, timeout=3)
+        data = resp.json()
+        if "price" in data:
+            return float(data["price"]), "Binance Real-Time Ticker 🟢"
+    except Exception:
+        pass
+    return None, None
+
 def get_market_data(symbol_key, interval_key, limit=100):
     info = CRYPTO_SYMBOLS[symbol_key]
     cfg = INTERVALS[interval_key]
     
-    current_price = st.session_state.live_prices[symbol_key]
-    feed_source = "Session Market Feed"
+    # Get instant real-time price first
+    rt_price, feed_source = get_live_binance_price(info["binance_symbol"])
     
-    # 1. Try Binance Public API (Real-time, matches TradingView Binance charts perfectly)
+    # 1. Fetch historical candles from Binance Klines for Strategy & Chart Data
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol={info['binance_symbol']}&interval={cfg['binance_int']}&limit={limit}"
         resp = requests.get(url, timeout=5)
@@ -120,15 +125,25 @@ def get_market_data(symbol_key, interval_key, limit=100):
                 })
             df = pd.DataFrame(candles)
             df.set_index("datetime", inplace=True)
-            current_price = float(df.iloc[-1]["close"])
+            
+            # Override latest close with absolute real-time ticker price if available
+            if rt_price is not None:
+                df.iloc[-1, df.columns.get_loc("close")] = rt_price
+                if rt_price > df.iloc[-1]["high"]:
+                    df.iloc[-1, df.columns.get_loc("high")] = rt_price
+                if rt_price < df.iloc[-1]["low"]:
+                    df.iloc[-1, df.columns.get_loc("low")] = rt_price
+                current_price = rt_price
+            else:
+                current_price = float(df.iloc[-1]["close"])
+                feed_source = "Binance Klines Feed 🟢"
+
             df['datetime_ist'] = df.index.tz_localize('UTC').tz_convert(IST) if df.index.tz is None else df.index.tz_convert(IST)
-            feed_source = "Binance Live Feed 🟢 (Real-Time)"
-            st.session_state.live_prices[symbol_key] = current_price
             return df[['open', 'high', 'low', 'close', 'datetime_ist']], current_price, feed_source
     except Exception:
         pass
 
-    # 2. Try Twelve Data API as Backup
+    # 2. Fallback to Twelve Data API if Binance fails
     try:
         url = f"https://api.twelvedata.com/time_series?symbol={info['twelve_symbol']}&interval={cfg['twelve_int']}&outputsize={limit}&apikey={TWELVE_DATA_API_KEY}"
         resp = requests.get(url, timeout=5)
@@ -149,23 +164,20 @@ def get_market_data(symbol_key, interval_key, limit=100):
             df.set_index("datetime", inplace=True)
             current_price = float(df.iloc[-1]["close"])
             df['datetime_ist'] = df.index.tz_localize('UTC').tz_convert(IST) if df.index.tz is None else df.index.tz_convert(IST)
-            feed_source = "Twelve Data Live Feed 🟡"
-            st.session_state.live_prices[symbol_key] = current_price
-            return df[['open', 'high', 'low', 'close', 'datetime_ist']], current_price, feed_source
+            return df[['open', 'high', 'low', 'close', 'datetime_ist']], current_price, "Twelve Data Feed 🟡"
     except Exception:
         pass
 
-    # 3. Simulator Feed Fallback
-    current_price = st.session_state.live_prices[symbol_key]
+    # 3. Ultimate Fallback
+    fallback_p = rt_price if rt_price else info["base_p"]
     dates = pd.date_range(end=datetime.now(timezone.utc), periods=limit, freq=cfg["pd_freq"])
     df = pd.DataFrame(index=dates)
-    df['open'] = float(current_price) * 0.999
-    df['high'] = float(current_price) * 1.002
-    df['low'] = float(current_price) * 0.998
-    df['close'] = float(current_price)
+    df['open'] = float(fallback_p)
+    df['high'] = float(fallback_p) * 1.001
+    df['low'] = float(fallback_p) * 0.999
+    df['close'] = float(fallback_p)
     df['datetime_ist'] = df.index.tz_convert(IST)
-    feed_source = "Simulator Feed ⚡"
-    return df[['open', 'high', 'low', 'close', 'datetime_ist']], float(current_price), feed_source
+    return df[['open', 'high', 'low', 'close', 'datetime_ist']], float(fallback_p), "Static Fallback Feed 🔴"
 
 def evaluate_brodax_strategy(df, current_price, symbol_key):
     current_price = float(current_price)
@@ -276,18 +288,18 @@ def execute_brodax_trade(con, symbol, timeframe, result, lot_size):
     candle_ts = str(result["candle_ts"])
     bias = result["bias"]
     
-    cursor.execute("SELECT id FROM brodax_open_trades_v3 WHERE symbol = ? AND candle_timestamp = ?", (symbol, candle_ts))
+    cursor.execute("SELECT id FROM brodax_open_trades_v4 WHERE symbol = ? AND candle_timestamp = ?", (symbol, candle_ts))
     if cursor.fetchone():
         return False, "Duplicate trade blocked for this candle timestamp!"
 
-    cursor.execute("SELECT id FROM brodax_open_trades_v3 WHERE symbol = ? AND bias = ?", (symbol, bias))
+    cursor.execute("SELECT id FROM brodax_open_trades_v4 WHERE symbol = ? AND bias = ?", (symbol, bias))
     if cursor.fetchone():
         return False, "Duplicate trade blocked: Active trade with same bias exists!"
 
     created_at_ist = datetime.now(IST).strftime('%Y-%m-%d %I:%M:%S %p IST')
     entry_time_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
     con.execute(
-        "INSERT INTO brodax_open_trades_v3 (created_at_ist, symbol, timeframe, entry_time_utc, entry_price, stop_loss, take_profit, lot_size, bias, strategy_votes, candle_timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO brodax_open_trades_v4 (created_at_ist, symbol, timeframe, entry_time_utc, entry_price, stop_loss, take_profit, lot_size, bias, strategy_votes, candle_timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (created_at_ist, symbol, timeframe, entry_time_utc, float(result["entry"]), float(result["sl"]), float(result["tp"]), float(lot_size), str(bias), str(result["votes"]), candle_ts)
     )
     con.commit()
@@ -295,7 +307,7 @@ def execute_brodax_trade(con, symbol, timeframe, result, lot_size):
 
 def close_single_trade(con, trade_id, current_price, reason="Manual Close 👤"):
     cursor = con.cursor()
-    cursor.execute("SELECT created_at_ist, symbol, timeframe, entry_price, stop_loss, take_profit, lot_size, bias, strategy_votes FROM brodax_open_trades_v3 WHERE id = ?", (trade_id,))
+    cursor.execute("SELECT created_at_ist, symbol, timeframe, entry_price, stop_loss, take_profit, lot_size, bias, strategy_votes FROM brodax_open_trades_v4 WHERE id = ?", (trade_id,))
     row = cursor.fetchone()
     if not row:
         return 0.0
@@ -313,14 +325,14 @@ def close_single_trade(con, trade_id, current_price, reason="Manual Close 👤")
         "INSERT INTO brodax_trade_history (id, created_at_ist, closed_at_ist, symbol, timeframe, entry_price, exit_price, stop_loss, take_profit, lot_size, bias, exit_reason, pnl_usd, strategy_votes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (trade_id, created_at_ist, closed_at_ist, symbol, timeframe, entry_price, round(current_price, 2 if current_price > 10 else 4), sl, tp, lot_size, bias, reason, pnl_usd, strategy_votes)
     )
-    con.execute("DELETE FROM brodax_open_trades_v3 WHERE id = ?", (trade_id,))
+    con.execute("DELETE FROM brodax_open_trades_v4 WHERE id = ?", (trade_id,))
     con.commit()
     update_balance(con, pnl_usd)
     return pnl_usd
 
 def check_auto_exits(con, current_price, current_bias):
     cursor = con.cursor()
-    cursor.execute("SELECT id, bias, entry_price, stop_loss, take_profit, lot_size, entry_time_utc FROM brodax_open_trades_v3")
+    cursor.execute("SELECT id, bias, entry_price, stop_loss, take_profit, lot_size, entry_time_utc FROM brodax_open_trades_v4")
     open_trades = cursor.fetchall()
     current_price = float(current_price)
     now_utc = datetime.now(timezone.utc)
@@ -359,7 +371,7 @@ def check_auto_exits(con, current_price, current_bias):
 
 # --- STREAMLIT UI ---
 st.title("⚡ BRODAX — Price Action Master Bot")
-st.caption("Multi-Timeframe Trend Filter • S&D Equilibrium • Live Auto-Refresh")
+st.caption("Binance Live Spot Feed • S&D Equilibrium • Real-Time Price Sync")
 
 con = connect_db()
 
@@ -371,8 +383,7 @@ with st.sidebar:
     default_lot = CRYPTO_SYMBOLS[symbol]["lot"]
     lot_input = st.number_input("Trade Lot Size", min_value=0.001, max_value=50.0, value=default_lot, step=0.001)
     
-    if st.button("🔄 Refresh Feed Now", use_container_width=True):
-        st.toast("Feed refreshed successfully!", icon="🔄")
+    if st.button("🔄 Refresh Data Now", use_icon=True, use_container_width=True):
         st.rerun()
 
     st.markdown("---")
@@ -391,7 +402,7 @@ with st.sidebar:
 
     st.markdown("---")
     if st.button("🗑️ Clear All Open Trades & History", use_container_width=True):
-        con.execute("DELETE FROM brodax_open_trades_v3")
+        con.execute("DELETE FROM brodax_open_trades_v4")
         con.execute("DELETE FROM brodax_trade_history")
         con.commit()
         st.sidebar.success("All trades cleared successfully!")
@@ -418,7 +429,7 @@ col1.metric("Live Market Price", f"${live_price:,.2f}" if live_price > 10 else f
 col2.metric("Brodax Bias", result["bias"])
 col3.metric("Bull / Bear Score", f"Bull: {result['bullish']} | Bear: {result['bearish']}")
 
-st.info(f"🟢 **Strategy Status:** Active (Anti-Duplicate & Multi-TF) | **Feed:** {feed_source}")
+st.info(f"🟢 **Strategy Status:** Active | **Feed Source:** {feed_source}")
 
 st.divider()
 
@@ -449,7 +460,7 @@ with right:
 
 st.divider()
 st.subheader("📋 Active Open Positions")
-open_df = pd.read_sql_query("SELECT * FROM brodax_open_trades_v3 ORDER BY id DESC", con)
+open_df = pd.read_sql_query("SELECT * FROM brodax_open_trades_v4 ORDER BY id DESC", con)
 
 if open_df.empty:
     st.info("Abhi koi open trade nahi hai.")
