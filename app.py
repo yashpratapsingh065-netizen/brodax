@@ -1,4 +1,4 @@
-# # BRODAX — Price Lesson Hindi + SMC Signal Engine
+# BRODAX — Price Lesson Hindi + SMC Signal Engine
 # Paper-trading only. No broker orders or live execution.
 # Install:
 #   pip install streamlit pandas numpy requests streamlit-autorefresh
@@ -122,7 +122,6 @@ def get_klines(symbol: str, interval: str, limit: int = 300) -> pd.DataFrame:
             df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
             df = df.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
 
-            # Exclude still-forming candle
             now = pd.Timestamp.now(tz="UTC")
             df = df[df["close_time"] < now].copy().reset_index(drop=True)
             if len(df) < 60:
