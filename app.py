@@ -1,4 +1,4 @@
-# BRODAX — Price Lesson Hindi + SMC Signal Engine
+# # BRODAX — Price Lesson Hindi + SMC Signal Engine
 # Paper-trading only. No broker orders or live execution.
 # Install:
 #   pip install streamlit pandas numpy requests streamlit-autorefresh
@@ -35,8 +35,6 @@ SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DO
 INTERVALS = ["5m", "15m", "1h", "4h", "1d"]
 INTERVAL_MS = {"5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
 
-# These are engineering defaults for detecting qualitative concepts in code.
-# They are NOT additional Price Lesson rules. Users can adjust them in the sidebar.
 DEFAULT_PIVOT_LOOKBACK = 3
 DEFAULT_ZONE_ATR = 0.35
 DEFAULT_MIN_RR = 3.0
@@ -124,7 +122,7 @@ def get_klines(symbol: str, interval: str, limit: int = 300) -> pd.DataFrame:
             df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
             df = df.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
 
-            # Only use completed candles. The last still-forming candle is excluded.
+            # Exclude still-forming candle
             now = pd.Timestamp.now(tz="UTC")
             df = df[df["close_time"] < now].copy().reset_index(drop=True)
             if len(df) < 60:
@@ -221,7 +219,6 @@ def candle_pattern(df: pd.DataFrame) -> str:
     if len(df) < 3:
         return "NONE"
     a, b = df.iloc[-2], df.iloc[-1]
-    # Engulfing body confirmation
     bull_engulf = (
         a["close"] < a["open"] and b["close"] > b["open"]
         and b["open"] <= a["close"] and b["close"] >= a["open"]
@@ -288,8 +285,6 @@ def detect_liquidity_sweep(df: pd.DataFrame, n: int = 3):
 
 
 def find_fvg(df: pd.DataFrame):
-    # Standard three-candle gap: candle 1 vs candle 3.
-    # Return only a recently-created, untouched zone.
     if len(df) < 5:
         return None
     for i in range(len(df)-2, max(1, len(df)-35), -1):
@@ -299,7 +294,6 @@ def find_fvg(df: pd.DataFrame):
         if bullish_gap:
             low, high = float(c1["high"]), float(c3["low"])
             later = df.iloc[i+2:]
-            # Any subsequent touch invalidates the first-test-only zone.
             touched = (later["low"] <= high).any()
             if not touched:
                 return {"side": "BULLISH", "low": low, "high": high, "mid": (low+high)/2, "index": i+1}
@@ -313,10 +307,6 @@ def find_fvg(df: pd.DataFrame):
 
 
 def detect_sd_zone(df: pd.DataFrame, atr_mult: float = 0.35):
-    # Mechanical approximation of transcript's three zone methods:
-    # (a) previous candle before >=3 strong directional candles,
-    # (b) tight consolidation before breakout,
-    # (c) cluster of long rejection wicks.
     if len(df) < 30:
         return None
     x = df.reset_index(drop=True)
@@ -332,7 +322,6 @@ def detect_sd_zone(df: pd.DataFrame, atr_mult: float = 0.35):
         if strong_bear:
             return {"side": "SUPPLY", "low": float(prev["low"]), "high": float(prev["high"]), "method": "3-candle momentum origin"}
 
-    # Consolidation breakout approximation
     window = x.tail(12)
     base = window.iloc[:-3]
     if len(base) >= 6:
@@ -344,7 +333,6 @@ def detect_sd_zone(df: pd.DataFrame, atr_mult: float = 0.35):
             if (last3["close"] < base["low"].min()).all():
                 return {"side": "SUPPLY", "low": float(base["low"].min()), "high": float(base["high"].max()), "method": "consolidation breakout"}
 
-    # Wick rejection cluster approximation
     recent = x.tail(30)
     wick_rows = recent[(recent["upper_wick"] > recent["body"]*2) | (recent["lower_wick"] > recent["body"]*2)]
     if len(wick_rows) >= 3:
@@ -357,7 +345,6 @@ def detect_sd_zone(df: pd.DataFrame, atr_mult: float = 0.35):
 
 
 def impulse_corrective_reversal(df: pd.DataFrame, n: int = 3):
-    # Compare the last two directional impulse/correction legs using confirmed swing points.
     highs, lows = pivot_points(df, n)
     if len(highs) < 2 or len(lows) < 2:
         return "NONE"
@@ -385,7 +372,6 @@ def analyze_all(data: Dict[str, pd.DataFrame], pivot_n: int, zone_atr: float):
     d5, d15, h1, h4, d1 = [add_indicators(data[k]) for k in ["5m", "15m", "1h", "4h", "1d"]]
     out = []
 
-    # Common entry timeframe is 15m for intraday/swing configuration.
     entry = d15
     px = float(entry["close"].iloc[-1])
     atr = float(entry["atr"].iloc[-1])
@@ -394,7 +380,7 @@ def analyze_all(data: Dict[str, pd.DataFrame], pivot_n: int, zone_atr: float):
     bos15, bos_level = detect_bos(entry, pivot_n)
     sweep15, sweep_level = detect_liquidity_sweep(entry, pivot_n)
 
-    # S1 — MTF: 4H direction, 1H behavior, 15M entry; all aligned.
+    # S1 — MTF
     dir4, beh1, ent15 = momentum_direction(h4), momentum_direction(h1), momentum_direction(d15)
     if dir4 == beh1 == ent15 and dir4 in ("BULLISH", "BEARISH"):
         wanted_pattern = "BULLISH_ENGULFING" if dir4 == "BULLISH" else "BEARISH_ENGULFING"
@@ -409,7 +395,7 @@ def analyze_all(data: Dict[str, pd.DataFrame], pivot_n: int, zone_atr: float):
         out.append(result("S1 MTF", reason="Higher/lower timeframe momentum not fully aligned",
                            details=f"4H={dir4}, 1H={beh1}, 15M={ent15}"))
 
-    # S2 — Chart reading: structure + impulse/corrective weakening clue.
+    # S2 — Chart Reading
     reversal = impulse_corrective_reversal(d15, pivot_n)
     if reversal == "POTENTIAL_BULLISH_REVERSAL" and pattern in ("BULLISH_ENGULFING", "BULLISH_REJECTION"):
         out.append(result("S2 Chart Reading", "BUY", "Downside impulse weakening; larger corrective leg and bullish candle confirmation", "MEDIUM"))
@@ -419,7 +405,7 @@ def analyze_all(data: Dict[str, pd.DataFrame], pivot_n: int, zone_atr: float):
         out.append(result("S2 Chart Reading", reason=f"Structure={trend15}; impulse/corrective reversal confirmation absent",
                            details=f"Reversal scan={reversal}; candle={pattern}"))
 
-    # S3 — Trend + retest + indecision followed by engulfing confirmation.
+    # S3 — 3-Step Price Action
     s3_side = "WAIT"
     s3_reason = "Waiting for retest/Doji followed by engulfing confirmation"
     if len(d15) >= 4:
@@ -430,7 +416,7 @@ def analyze_all(data: Dict[str, pd.DataFrame], pivot_n: int, zone_atr: float):
             s3_side, s3_reason = "SELL", "Bearish structure; Doji/indecision followed by bearish engulfing"
     out.append(result("S3 3-Step Price Action", s3_side, s3_reason, "MEDIUM" if s3_side != "WAIT" else "LOW"))
 
-    # S4 — S/R proximity + rejection + MA crossover confirmation.
+    # S4 — Support & Resistance
     support, resistance, tol = nearest_sr_zones(d15, pivot_n, zone_atr)
     ema_cross_up = d15["ema20"].iloc[-1] > d15["ema50"].iloc[-1] and d15["ema20"].iloc[-2] <= d15["ema50"].iloc[-2]
     ema_cross_dn = d15["ema20"].iloc[-1] < d15["ema50"].iloc[-1] and d15["ema20"].iloc[-2] >= d15["ema50"].iloc[-2]
@@ -442,8 +428,7 @@ def analyze_all(data: Dict[str, pd.DataFrame], pivot_n: int, zone_atr: float):
         out.append(result("S4 Support & Resistance", reason="Need nearby tested S/R zone + reversal candle + MA crossover",
                            details=f"Support={support}; Resistance={resistance}; pattern={pattern}"))
 
-    # S5 — IDM: BOS, then first pullback level gets taken; wick/body/tap counts.
-    # This is a conservative mechanical approximation of the transcript's left-side pullback rule.
+    # S5 — Inducement (IDM)
     idm_side = "WAIT"
     idm_reason = "No confirmed BOS followed by first-pullback inducement"
     if len(d15) > 20:
@@ -451,7 +436,6 @@ def analyze_all(data: Dict[str, pd.DataFrame], pivot_n: int, zone_atr: float):
         p_highs, p_lows = pivot_points(prior.reset_index(drop=True), pivot_n)
         if bos15 == "BULLISH" and p_lows:
             pullback_low = p_lows[-1][1]
-            # In bullish structure, a sweep below the first pullback low is treated as inducement.
             if float(d15["low"].iloc[-1]) <= pullback_low and float(d15["close"].iloc[-1]) > pullback_low:
                 idm_side, idm_reason = "BUY", "Bullish BOS; first pullback low was swept and price reclaimed it (IDM approximation)"
         elif bos15 == "BEARISH" and p_highs:
@@ -460,12 +444,11 @@ def analyze_all(data: Dict[str, pd.DataFrame], pivot_n: int, zone_atr: float):
                 idm_side, idm_reason = "SELL", "Bearish BOS; first pullback high was swept and price rejected it (IDM approximation)"
     out.append(result("S5 Inducement (IDM)", idm_side, idm_reason, "MEDIUM" if idm_side != "WAIT" else "LOW"))
 
-    # S5-FVG — unmitigated FVG + sweep + BOS alignment + 50% equilibrium rejection.
+    # S5-FVG — Valid FVG
     fvg = find_fvg(d15)
     fvg_side = "WAIT"
     fvg_reason = "No fresh unmitigated FVG with all required confluences"
     if fvg:
-        inside = fvg["low"] <= px <= fvg["high"]
         mid_reject_bull = fvg["side"] == "BULLISH" and float(d15["low"].iloc[-1]) <= fvg["mid"] and float(d15["close"].iloc[-1]) > fvg["mid"]
         mid_reject_bear = fvg["side"] == "BEARISH" and float(d15["high"].iloc[-1]) >= fvg["mid"] and float(d15["close"].iloc[-1]) < fvg["mid"]
         if fvg["side"] == "BULLISH" and sweep15 == "BULLISH_SWEEP" and bos15 == "BULLISH" and mid_reject_bull:
@@ -477,7 +460,7 @@ def analyze_all(data: Dict[str, pd.DataFrame], pivot_n: int, zone_atr: float):
     out.append(result("S5-FVG Valid FVG", fvg_side, fvg_reason, "HIGH" if fvg_side != "WAIT" else "LOW",
                        details=f"FVG={fvg}"))
 
-    # S6 + S9 — Supply & Demand zone + confirmation. Same transcript family, separately displayed.
+    # S6 & S9 — Supply & Demand
     sd = detect_sd_zone(d15, zone_atr)
     sd_side = "WAIT"
     sd_reason = "No valid recent S/D zone with confirmation"
@@ -496,7 +479,7 @@ def analyze_all(data: Dict[str, pd.DataFrame], pivot_n: int, zone_atr: float):
     out.append(result("S9 S/D Full Guide", sd_side, sd_reason + "; Fib 0.5/0.618 confluence is monitored separately", "MEDIUM" if sd_side != "WAIT" else "LOW",
                        details=f"Zone={sd}"))
 
-    # S7 — Premium / Discount from recent valid dealing range.
+    # S7 — Premium & Discount
     swing_high, swing_low = recent_levels(d15, pivot_n)
     eq = (swing_high + swing_low) / 2
     pd_side = "WAIT"
@@ -508,12 +491,11 @@ def analyze_all(data: Dict[str, pd.DataFrame], pivot_n: int, zone_atr: float):
     out.append(result("S7 Premium & Discount", pd_side, pd_reason, "MEDIUM" if pd_side != "WAIT" else "LOW",
                        details=f"Range low={swing_low}; high={swing_high}; equilibrium={eq}"))
 
-    # S8 — Daily bias: previous daily candle body close beyond prior day's high/low;
-    # wick-only break then close back inside = sweep; inside bar = neutral.
+    # S8 — Daily Bias
     daily_bias = "NEUTRAL"
     daily_reason = "No clear daily bias"
     if len(d1) >= 3:
-        p2, p1 = d1.iloc[-2], d1.iloc[-1]  # prior completed day, then most recent completed day
+        p2, p1 = d1.iloc[-2], d1.iloc[-1]
         if p1["high"] < p2["high"] and p1["low"] > p2["low"]:
             daily_bias, daily_reason = "NEUTRAL", "Previous completed daily candle is an inside bar"
         elif p1["close"] > p2["high"]:
@@ -532,8 +514,6 @@ def analyze_all(data: Dict[str, pd.DataFrame], pivot_n: int, zone_atr: float):
     out.append(result("S8 Daily Bias", daily_side, daily_reason + f"; 15M alignment={ent15}", "HIGH" if daily_side != "WAIT" else "LOW",
                        details=f"Daily bias={daily_bias}"))
 
-    # Risk levels based on recent structure. The 1:3 target is the S8 framework.
-    # Stops are placed beyond recent swing with an ATR safety buffer.
     recent_hi, recent_lo = recent_levels(d15, pivot_n)
     buffer = max(atr * 0.15, px * 0.0003)
     buy_stop = min(recent_lo, px - atr) - buffer
@@ -543,7 +523,6 @@ def analyze_all(data: Dict[str, pd.DataFrame], pivot_n: int, zone_atr: float):
     buy_target = px + buy_risk * DEFAULT_MIN_RR
     sell_target = px - sell_risk * DEFAULT_MIN_RR
 
-    # Confluence consensus counts distinct strategy families; S6/S9 are one family to avoid double-counting.
     votes = {"BUY": [], "SELL": []}
     for r in out:
         if r["side"] in votes:
@@ -572,7 +551,7 @@ def analyze_all(data: Dict[str, pd.DataFrame], pivot_n: int, zone_atr: float):
 # --------------------------- PAPER TRADING ---------------------------
 
 def open_paper_trade(conn, symbol, side, entry, stop, target, balance, reason):
-    risk_cash = balance * 0.01  # 1% paper-account risk per trade
+    risk_cash = balance * 0.01
     per_unit_risk = abs(entry - stop)
     if per_unit_risk <= 0:
         raise ValueError("Invalid stop distance.")
@@ -645,14 +624,12 @@ except Exception as e:
     st.warning("Check internet access, pair availability, and Binance API access. No fabricated fallback price is used.")
     st.stop()
 
-# Use UI-selected risk and vote settings (rather than hidden constants).
 analysis["consensus"] = "WAIT"
 if analysis["buy_votes"] >= min_votes and analysis["buy_votes"] > analysis["sell_votes"]:
     analysis["consensus"] = "BUY"
 elif analysis["sell_votes"] >= min_votes and analysis["sell_votes"] > analysis["buy_votes"]:
     analysis["consensus"] = "SELL"
 
-# Show current ticker separately from last completed 15m candle close.
 c1, c2, c3, c4 = st.columns(4)
 c1.metric(f"{symbol} live ticker", f"${live_price:,.6f}")
 c2.metric("Last completed 15m close", f"${analysis['entry_price']:,.6f}")
@@ -715,7 +692,6 @@ open_rows = conn.execute("""
     FROM paper_trades WHERE status='OPEN' ORDER BY id DESC
 """).fetchall()
 
-# Manual paper entry only; the bot does not silently open trades.
 can_open = analysis["consensus"] in ("BUY", "SELL")
 if can_open:
     side = analysis["consensus"]
@@ -742,7 +718,6 @@ if can_open:
 else:
     st.info("Paper trade button appears only when the selected minimum strategy confluence produces BUY or SELL.")
 
-# Manage open trades against fresh ticker values for all symbols currently held.
 held_symbols = sorted({r[1] for r in open_rows})
 price_map = {symbol: live_price}
 for held in held_symbols:
@@ -792,9 +767,9 @@ st.markdown("""
 - **S2:** Swing structure and impulse/corrective leg-size change; reversal is marked only as potential until candle confirmation.
 - **S3:** Trend + Doji/indecision + engulfing confirmation.
 - **S4:** Nearby swing S/R + reversal candle + MA crossover.
-- **S5 IDM:** BOS followed by a first-pullback level sweep/reclaim approximation. The transcript's “look left” rule is approximated by recent confirmed pivots.
+- **S5 IDM:** BOS followed by a first-pullback level sweep/reclaim approximation.
 - **S5-FVG:** Three-candle FVG, first-test/unmitigated check, sweep, BOS alignment, and 50% midpoint rejection.
-- **S6/S9:** Supply/demand zone retest + rejection/engulfing. The three zone drawing methods are approximated algorithmically.
+- **S6/S9:** Supply/demand zone retest + rejection/engulfing.
 - **S7:** Recent swing dealing range, 50% equilibrium; discount buys / premium sells, with rejection confirmation.
 - **S8:** Previous completed daily candle PDH/PDL close, wick sweep, inside-bar neutral; lower-timeframe alignment.
 """)
