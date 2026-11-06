@@ -31,7 +31,7 @@ DEFAULT_ZONE_ATR = 0.35
 DEFAULT_MIN_RR = 3.0
 DEFAULT_CONFLUENCE = 2
 DEFAULT_PAPER_BALANCE = 1000.0
-REQUEST_TIMEOUT = 12
+REQUEST_TIMEOUT = 15
 
 # Get Twelve Data API Key from Streamlit Secrets or Environment
 TWELVE_KEY = ""
@@ -106,8 +106,16 @@ def get_twelve_klines(interval_td: str, limit: int = 150) -> pd.DataFrame:
         
         df = pd.DataFrame(res["values"])
         df["datetime"] = pd.to_datetime(df["datetime"], utc=True)
-        for c in ["open", "high", "low", "close", "volume"]:
+        
+        # Safely convert price columns and handle missing volume fields on free plans
+        for c in ["open", "high", "low", "close"]:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+            
+        if "volume" in df.columns:
+            df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0.0)
+        else:
+            df["volume"] = 0.0
+
         df = df.sort_values("datetime").reset_index(drop=True)
         df = df.rename(columns={"datetime": "close_time"})
         if len(df) < 30:
