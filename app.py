@@ -1,4 +1,4 @@
-# BRODAX — Price Lesson Hindi + SMC Signal Engine (Optimized for BTC via Twelve Data)
+# BRODAX — Price Lesson Hindi + SMC Signal Engine (BTC Optimized via Twelve Data)
 # Paper-trading only. No broker orders or live execution.
 
 import os
@@ -18,7 +18,7 @@ try:
 except Exception:
     AUTOREFRESH_AVAILABLE = False
 
-st.set_page_config(page_title="BRODAX | BTC Price Lesson + SMC", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="BRODAX | BTC SMC Terminal", page_icon="⚡", layout="wide")
 
 # --------------------------- CONFIGURATION ---------------------------
 
@@ -91,10 +91,10 @@ def load_balance(conn):
 
 # --------------------------- MARKET DATA (TWELVE DATA) ---------------------------
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=10, show_spinner=False)
 def get_twelve_klines(interval_td: str, limit: int = 150) -> pd.DataFrame:
     if not TWELVE_KEY:
-        raise RuntimeError("Twelve Data API key not found in Streamlit Secrets! Please add TWELVE_DATA_API_KEY.")
+        raise RuntimeError("Twelve Data API key not found! Please configure TWELVE_DATA_API_KEY in Streamlit Secrets.")
     
     url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL_TD}&interval={interval_td}&outputsize={limit}&timezone=UTC&apikey={TWELVE_KEY}"
     try:
@@ -110,14 +110,14 @@ def get_twelve_klines(interval_td: str, limit: int = 150) -> pd.DataFrame:
             df[c] = pd.to_numeric(df[c], errors="coerce")
         df = df.sort_values("datetime").reset_index(drop=True)
         df = df.rename(columns={"datetime": "close_time"})
-        if len(df) < 40:
+        if len(df) < 30:
             raise ValueError("Not enough completed candles from Twelve Data.")
         return df
     except Exception as exc:
         raise RuntimeError(f"Twelve Data market fetch failed: {exc}")
 
 
-@st.cache_data(ttl=3, show_spinner=False)
+@st.cache_data(ttl=5, show_spinner=False)
 def get_twelve_price() -> float:
     if not TWELVE_KEY:
         raise RuntimeError("Twelve Data API key missing.")
@@ -177,10 +177,8 @@ def trend_from_swings(df: pd.DataFrame, n: int = 3) -> str:
     hl = lows[-1][1] > lows[-2][1]
     lh = highs[-1][1] < highs[-2][1]
     ll = lows[-1][1] < lows[-2][1]
-    if hh and hl:
-        return "BULLISH"
-    if lh and ll:
-        return "BEARISH"
+    if hh and hl: return "BULLISH"
+    if lh and ll: return "BEARISH"
     return "NEUTRAL"
 
 
@@ -199,14 +197,8 @@ def candle_pattern(df: pd.DataFrame) -> str:
     if len(df) < 3:
         return "NONE"
     a, b = df.iloc[-2], df.iloc[-1]
-    bull_engulf = (
-        a["close"] < a["open"] and b["close"] > b["open"]
-        and b["open"] <= a["close"] and b["close"] >= a["open"]
-    )
-    bear_engulf = (
-        a["close"] > a["open"] and b["close"] < b["open"]
-        and b["open"] >= a["close"] and b["close"] <= a["open"]
-    )
+    bull_engulf = (a["close"] < a["open"] and b["close"] > b["open"] and b["open"] <= a["close"] and b["close"] >= a["open"])
+    bear_engulf = (a["close"] > a["open"] and b["close"] < b["open"] and b["open"] >= a["close"] and b["close"] <= a["open"])
     if bull_engulf: return "BULLISH_ENGULFING"
     if bear_engulf: return "BEARISH_ENGULFING"
     r = max(float(b["range"]), 1e-12)
@@ -223,30 +215,20 @@ def recent_levels(df: pd.DataFrame, n: int = 3):
     return float(hi), float(lo)
 
 
-def detect_bos(df: pd.DataFrame, n: int = 3):
-    highs, lows = pivot_points(df.iloc[:-1].reset_index(drop=True), n)
-    close = float(df["close"].iloc[-1])
-    if highs and close > highs[-1][1]:
-        return "BULLISH", float(highs[-1][1])
-    if lows and close < lows[-1][1]:
-        return "BEARISH", float(lows[-1][1])
-    return "NONE", None
-
-
 def find_fvg(df: pd.DataFrame):
     if len(df) < 5: return None
-    for i in range(len(df)-2, max(1, len(df)-25), -1):
+    for i in range(len(df)-2, max(1, len(df)-20), -1):
         c1, c2, c3 = df.iloc[i-1], df.iloc[i], df.iloc[i+1]
         if float(c1["high"]) < float(c3["low"]) and bool(c2["bull"]):
-            return {"side": "BULLISH", "low": float(c1["high"]), "high": float(c3["low"]), "mid": (float(c1["high"])+float(c3["low"]))/2}
+            return {"side": "BULLISH", "low": float(c1["high"]), "high": float(c3["low"])}
         if float(c1["low"]) > float(c3["high"]) and bool(c2["bear"]):
-            return {"side": "BEARISH", "low": float(c3["high"]), "high": float(c1["low"]), "mid": (float(c3["high"])+float(c1["low"]))/2}
+            return {"side": "BEARISH", "low": float(c3["high"]), "high": float(c1["low"])}
     return None
 
 
 def detect_sd_zone(df: pd.DataFrame):
     if len(df) < 20: return None
-    x = df.tail(25)
+    x = df.tail(20)
     lo = float(x["low"].min())
     hi = float(x["high"].max())
     px = float(x["close"].iloc[-1])
@@ -256,10 +238,10 @@ def detect_sd_zone(df: pd.DataFrame):
         return {"side": "SUPPLY", "low": (lo+hi)/2, "high": hi}
 
 
-# --------------------------- STRATEGY ENGINE (BRODAX BTC) ---------------------------
+# --------------------------- STRATEGY ENGINE ---------------------------
 
-def result(name, side="WAIT", reason="No complete setup", confidence="LOW", details=""):
-    return {"strategy": name, "side": side, "reason": reason, "confidence": confidence, "details": details}
+def result(name, side="WAIT", reason="No complete setup", confidence="LOW"):
+    return {"strategy": name, "side": side, "reason": reason, "confidence": confidence}
 
 
 def analyze_btc(data: Dict[str, pd.DataFrame], pivot_n: int):
@@ -271,33 +253,31 @@ def analyze_btc(data: Dict[str, pd.DataFrame], pivot_n: int):
     atr = float(entry["atr"].iloc[-1])
     pattern = candle_pattern(entry)
     trend15 = trend_from_swings(entry, pivot_n)
-    bos15, _ = detect_bos(entry, pivot_n)
 
     # S1 — MTF Alignment
     dir4, beh1, ent15 = momentum_direction(h4), momentum_direction(h1), momentum_direction(d15)
     if dir4 == beh1 == ent15 and dir4 in ("BULLISH", "BEARISH"):
-        side = "BUY" if dir4 == "BULLISH" else "SELL"
-        out.append(result("S1 MTF", side, f"4H/1H/15M momentum fully aligned ({dir4})", "HIGH"))
+        out.append(result("S1 MTF", "BUY" if dir4 == "BULLISH" else "SELL", f"Multi-timeframe momentum aligned ({dir4})", "HIGH"))
     else:
         out.append(result("S1 MTF", reason=f"Timeframes mixed: 4H={dir4}, 1H={beh1}, 15M={ent15}"))
 
     # S4 — S/R & Rejection
     hi, lo = recent_levels(entry, pivot_n)
     if abs(px - lo) <= atr * 1.5 and pattern in ("BULLISH_ENGULFING", "BULLISH_REJECTION"):
-        out.append(result("S4 Support & Resistance", "BUY", "Near swing support with bullish reversal candle", "HIGH"))
+        out.append(result("S4 S/R Rejection", "BUY", "Near support zone with bullish reversal candle", "HIGH"))
     elif abs(px - hi) <= atr * 1.5 and pattern in ("BEARISH_ENGULFING", "BEARISH_REJECTION"):
-        out.append(result("S4 Support & Resistance", "SELL", "Near swing resistance with bearish reversal candle", "HIGH"))
+        out.append(result("S4 S/R Rejection", "SELL", "Near resistance zone with bearish reversal candle", "HIGH"))
     else:
-        out.append(result("S4 Support & Resistance", reason="Waiting for exact test of support/resistance with rejection"))
+        out.append(result("S4 S/R Rejection", reason="Waiting for exact test of support/resistance"))
 
     # S5-FVG — Fair Value Gap
     fvg = find_fvg(entry)
     if fvg and fvg["side"] == "BULLISH" and pattern in ("BULLISH_ENGULFING", "BULLISH_REJECTION"):
-        out.append(result("S5-FVG FVG Rejection", "BUY", "Bullish FVG zone test with confirmation", "MEDIUM"))
+        out.append(result("S5-FVG FVG Test", "BUY", "Bullish FVG zone test with confirmation", "MEDIUM"))
     elif fvg and fvg["side"] == "BEARISH" and pattern in ("BEARISH_ENGULFING", "BEARISH_REJECTION"):
-        out.append(result("S5-FVG FVG Rejection", "SELL", "Bearish FVG zone test with confirmation", "MEDIUM"))
+        out.append(result("S5-FVG FVG Test", "SELL", "Bearish FVG zone test with confirmation", "MEDIUM"))
     else:
-        out.append(result("S5-FVG FVG Rejection", reason="No active FVG test with candle confirmation"))
+        out.append(result("S5-FVG FVG Test", reason="No active FVG zone test with candle confirmation"))
 
     # S6 — Supply & Demand
     sd = detect_sd_zone(entry)
@@ -357,7 +337,7 @@ with st.sidebar:
     pivot_n = st.slider("Swing Lookback", 2, 6, DEFAULT_PIVOT_LOOKBACK)
     min_votes = st.slider("Min Strategy Confluence", 1, 5, DEFAULT_CONFLUENCE)
     paper_risk_pct = st.slider("Paper Risk per Trade (%)", 0.25, 2.0, 1.0, 0.25)
-    refresh_seconds = st.selectbox("Refresh Interval (sec)", [5, 10, 15, 30], index=1)
+    refresh_seconds = st.selectbox("Refresh Interval (sec)", [10, 15, 30, 60], index=1)
 
 if AUTOREFRESH_AVAILABLE:
     st_autorefresh(interval=refresh_seconds * 1000, key="brodax_btc_refresh")
@@ -372,7 +352,7 @@ try:
         analysis = analyze_btc(market, pivot_n)
 except Exception as e:
     st.error(f"Data Fetch Error: {e}")
-    st.warning("Please verify your `TWELVE_DATA_API_KEY` in Streamlit Secrets (`.streamlit/secrets.toml`).")
+    st.warning("Please verify your `TWELVE_DATA_API_KEY` in Streamlit Cloud Secrets (`.streamlit/secrets.toml`).")
     st.stop()
 
 # Metrics Display
