@@ -1,5 +1,5 @@
-# BRODAX — BTC SMC Signal Engine (Rate-Limit Optimized via Twelve Data)
-# Paper-trading only. No broker orders or live execution.
+# BRODAX — BTC Price Lesson Terminal + Live TradingView Chart
+# Paper-trading only. Rate-limit safe Twelve Data integration.
 
 import os
 import sqlite3
@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -18,7 +19,7 @@ try:
 except Exception:
     AUTOREFRESH_AVAILABLE = False
 
-st.set_page_config(page_title="BRODAX | BTC SMC Terminal", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="BRODAX | BTC SMC Terminal & Chart", page_icon="⚡", layout="wide")
 
 # --------------------------- CONFIGURATION & SECRETS ---------------------------
 
@@ -92,20 +93,19 @@ def load_balance(conn):
 # --------------------------- MARKET DATA (CACHED & RATE-LIMIT SAFE) ---------------------------
 
 @st.cache_data(ttl=60, show_spinner=False)
-def get_twelve_klines(interval_td: str, limit: int = 100) -> pd.DataFrame:
+def get_twelve_klines(interval_td: str, limit: int = 80) -> pd.DataFrame:
     if not TWELVE_KEY:
         raise RuntimeError("Twelve Data API key missing! Please check Streamlit Secrets.")
     
     url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL_TD}&interval={interval_td}&outputsize={limit}&timezone=UTC&apikey={TWELVE_KEY}"
     try:
-        # Add a tiny pause to prevent hitting 429 Too Many Requests rate limit
-        time.sleep(0.5)
+        time.sleep(0.6)  # Safety pause to prevent 429 errors
         r = requests.get(url, timeout=REQUEST_TIMEOUT)
         r.raise_for_status()
         res = r.json()
         
         if "code" in res and int(res["code"]) == 429:
-            raise RuntimeError("Twelve Data rate limit hit (429). Please wait a minute or upgrade plan.")
+            raise RuntimeError("Twelve Data rate limit hit (429). Please wait a moment.")
             
         if "values" not in res:
             raise ValueError(f"Twelve Data Error: {res.get('message', res)}")
@@ -340,7 +340,7 @@ def analyze_pricelesson_btc(data: Dict[str, pd.DataFrame], pivot_n: int):
 # --------------------------- STREAMLIT UI ---------------------------
 
 st.title("⚡ BRODAX | BTC Price Lesson Terminal")
-st.caption("Twelve Data API Feed • Bitcoin (BTC/USD) • Rate-Limit Optimized")
+st.caption("Twelve Data API Feed • Bitcoin (BTC/USD) • Live TradingView Chart")
 
 with st.sidebar:
     st.header("⚙️ BRODAX Controls")
@@ -358,7 +358,6 @@ balance = load_balance(conn)
 
 try:
     with st.spinner("Fetching BTC market data safely from Twelve Data..."):
-        # Fetch intervals one by one with built-in safety pauses
         market = {}
         for tf, iv in INTERVALS.items():
             market[tf] = get_twelve_klines(iv, 80)
@@ -367,7 +366,7 @@ try:
         analysis = analyze_pricelesson_btc(market, pivot_n)
 except Exception as e:
     st.error(f"Data Fetch / Rate-Limit Error: {e}")
-    st.info("Tip: Twelve Data free tier allows limited requests per minute. Caching has been increased to prevent 429 errors.")
+    st.info("Tip: Twelve Data free tier allows limited requests per minute. Caching is active to prevent 429 errors.")
     st.stop()
 
 # Top Metrics Bar
@@ -402,6 +401,15 @@ with col_sig2:
         st.write(f"**Target (1:3 R:R):** ${analysis['sell_target']:,.2f}")
     else:
         st.info("Standing by. Waiting for independent strategy families to agree.")
+
+st.divider()
+
+# LIVE TRADINGVIEW CHART INTEGRATION
+st.subheader("📈 Live TradingView Chart (BTC/USD)")
+components.html(
+    '<iframe src="https://s.tradingview.com/widgetembed/?symbol=BINANCE:BTCUSDT&interval=15&theme=dark&style=1&timezone=Asia%2FKolkata&locale=en" width="100%" height="480" style="border:0"></iframe>',
+    height=490
+)
 
 st.divider()
 st.subheader("📚 Price Lesson Strategy Database")
