@@ -1,11 +1,11 @@
-# BRODAX — Price Lesson Hindi + SMC Signal Engine (BTC Optimized via Twelve Data)
+# BRODAX — BTC SMC Signal Engine (Rate-Limit Optimized via Twelve Data)
 # Paper-trading only. No broker orders or live execution.
 
 import os
 import sqlite3
 import time
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -20,9 +20,9 @@ except Exception:
 
 st.set_page_config(page_title="BRODAX | BTC SMC Terminal", page_icon="⚡", layout="wide")
 
-# --------------------------- CONFIGURATION ---------------------------
+# --------------------------- CONFIGURATION & SECRETS ---------------------------
 
-DB_FILE = "brodax_btc_paper.db"
+DB_FILE = "brodax_btc_pricelesson.db"
 SYMBOL_TD = "BTC/USD"
 INTERVALS = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h", "1d": "1day"}
 
@@ -33,7 +33,7 @@ DEFAULT_CONFLUENCE = 2
 DEFAULT_PAPER_BALANCE = 1000.0
 REQUEST_TIMEOUT = 15
 
-# Get Twelve Data API Key from Streamlit Secrets or Environment
+# Retrieve Twelve Data API Key securely
 TWELVE_KEY = ""
 try:
     if "TWELVE_DATA_API_KEY" in st.secrets:
@@ -45,7 +45,7 @@ if not TWELVE_KEY:
     TWELVE_KEY = os.getenv("TWELVE_DATA_API_KEY", "").strip()
 
 
-# --------------------------- DATABASE ---------------------------
+# --------------------------- DATABASE SETUP ---------------------------
 
 def db_connect():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -89,25 +89,30 @@ def load_balance(conn):
     return DEFAULT_PAPER_BALANCE
 
 
-# --------------------------- MARKET DATA (TWELVE DATA) ---------------------------
+# --------------------------- MARKET DATA (CACHED & RATE-LIMIT SAFE) ---------------------------
 
-@st.cache_data(ttl=10, show_spinner=False)
-def get_twelve_klines(interval_td: str, limit: int = 150) -> pd.DataFrame:
+@st.cache_data(ttl=60, show_spinner=False)
+def get_twelve_klines(interval_td: str, limit: int = 100) -> pd.DataFrame:
     if not TWELVE_KEY:
-        raise RuntimeError("Twelve Data API key not found! Please configure TWELVE_DATA_API_KEY in Streamlit Secrets.")
+        raise RuntimeError("Twelve Data API key missing! Please check Streamlit Secrets.")
     
     url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL_TD}&interval={interval_td}&outputsize={limit}&timezone=UTC&apikey={TWELVE_KEY}"
     try:
+        # Add a tiny pause to prevent hitting 429 Too Many Requests rate limit
+        time.sleep(0.5)
         r = requests.get(url, timeout=REQUEST_TIMEOUT)
         r.raise_for_status()
         res = r.json()
+        
+        if "code" in res and int(res["code"]) == 429:
+            raise RuntimeError("Twelve Data rate limit hit (429). Please wait a minute or upgrade plan.")
+            
         if "values" not in res:
             raise ValueError(f"Twelve Data Error: {res.get('message', res)}")
         
         df = pd.DataFrame(res["values"])
         df["datetime"] = pd.to_datetime(df["datetime"], utc=True)
         
-        # Safely convert price columns and handle missing volume fields on free plans
         for c in ["open", "high", "low", "close"]:
             df[c] = pd.to_numeric(df[c], errors="coerce")
             
@@ -118,14 +123,14 @@ def get_twelve_klines(interval_td: str, limit: int = 150) -> pd.DataFrame:
 
         df = df.sort_values("datetime").reset_index(drop=True)
         df = df.rename(columns={"datetime": "close_time"})
-        if len(df) < 30:
-            raise ValueError("Not enough completed candles from Twelve Data.")
+        if len(df) < 20:
+            raise ValueError("Insufficient completed candles returned.")
         return df
     except Exception as exc:
-        raise RuntimeError(f"Twelve Data market fetch failed: {exc}")
+        raise RuntimeError(f"Twelve Data fetch failed for {interval_td}: {exc}")
 
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def get_twelve_price() -> float:
     if not TWELVE_KEY:
         raise RuntimeError("Twelve Data API key missing.")
@@ -141,7 +146,7 @@ def get_twelve_price() -> float:
         raise RuntimeError(f"Live ticker unavailable: {exc}")
 
 
-# --------------------------- INDICATORS / STRUCTURE ---------------------------
+# --------------------------- INDICATORS & SMC STRUCTURE ---------------------------
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     x = df.copy()
@@ -246,13 +251,13 @@ def detect_sd_zone(df: pd.DataFrame):
         return {"side": "SUPPLY", "low": (lo+hi)/2, "high": hi}
 
 
-# --------------------------- STRATEGY ENGINE ---------------------------
+# --------------------------- PRICE LESSON SMC STRATEGY ENGINE ---------------------------
 
-def result(name, side="WAIT", reason="No complete setup", confidence="LOW"):
+def result(name, side="WAIT", reason="Setup in progress", confidence="LOW"):
     return {"strategy": name, "side": side, "reason": reason, "confidence": confidence}
 
 
-def analyze_btc(data: Dict[str, pd.DataFrame], pivot_n: int):
+def analyze_pricelesson_btc(data: Dict[str, pd.DataFrame], pivot_n: int):
     d5, d15, h1, h4, d1 = [add_indicators(data[k]) for k in ["5m", "15m", "1h", "4h", "1d"]]
     out = []
 
@@ -262,54 +267,52 @@ def analyze_btc(data: Dict[str, pd.DataFrame], pivot_n: int):
     pattern = candle_pattern(entry)
     trend15 = trend_from_swings(entry, pivot_n)
 
-    # S1 — MTF Alignment
+    # S1 — Multi-Timeframe Alignment
     dir4, beh1, ent15 = momentum_direction(h4), momentum_direction(h1), momentum_direction(d15)
     if dir4 == beh1 == ent15 and dir4 in ("BULLISH", "BEARISH"):
-        out.append(result("S1 MTF", "BUY" if dir4 == "BULLISH" else "SELL", f"Multi-timeframe momentum aligned ({dir4})", "HIGH"))
+        out.append(result("S1 MTF Alignment", "BUY" if dir4 == "BULLISH" else "SELL", f"Momentum aligned ({dir4})", "HIGH"))
     else:
-        out.append(result("S1 MTF", reason=f"Timeframes mixed: 4H={dir4}, 1H={beh1}, 15M={ent15}"))
+        out.append(result("S1 MTF Alignment", reason=f"Timeframes unaligned: 4H={dir4}, 1H={beh1}, 15M={ent15}"))
 
-    # S4 — S/R & Rejection
+    # S4 — Support & Resistance + Rejection
     hi, lo = recent_levels(entry, pivot_n)
     if abs(px - lo) <= atr * 1.5 and pattern in ("BULLISH_ENGULFING", "BULLISH_REJECTION"):
-        out.append(result("S4 S/R Rejection", "BUY", "Near support zone with bullish reversal candle", "HIGH"))
+        out.append(result("S4 Support & Resistance", "BUY", "Support retest confirmed with reversal candle", "HIGH"))
     elif abs(px - hi) <= atr * 1.5 and pattern in ("BEARISH_ENGULFING", "BEARISH_REJECTION"):
-        out.append(result("S4 S/R Rejection", "SELL", "Near resistance zone with bearish reversal candle", "HIGH"))
+        out.append(result("S4 Support & Resistance", "SELL", "Resistance retest confirmed with reversal candle", "HIGH"))
     else:
-        out.append(result("S4 S/R Rejection", reason="Waiting for exact test of support/resistance"))
+        out.append(result("S4 Support & Resistance", reason="Waiting for S/R retest confirmation"))
 
     # S5-FVG — Fair Value Gap
     fvg = find_fvg(entry)
     if fvg and fvg["side"] == "BULLISH" and pattern in ("BULLISH_ENGULFING", "BULLISH_REJECTION"):
-        out.append(result("S5-FVG FVG Test", "BUY", "Bullish FVG zone test with confirmation", "MEDIUM"))
+        out.append(result("S5-FVG Fair Value Gap", "BUY", "Bullish FVG zone test with confirmation", "MEDIUM"))
     elif fvg and fvg["side"] == "BEARISH" and pattern in ("BEARISH_ENGULFING", "BEARISH_REJECTION"):
-        out.append(result("S5-FVG FVG Test", "SELL", "Bearish FVG zone test with confirmation", "MEDIUM"))
+        out.append(result("S5-FVG Fair Value Gap", "SELL", "Bearish FVG zone test with confirmation", "MEDIUM"))
     else:
-        out.append(result("S5-FVG FVG Test", reason="No active FVG zone test with candle confirmation"))
+        out.append(result("S5-FVG Fair Value Gap", reason="No active FVG test"))
 
-    # S6 — Supply & Demand
+    # S6 — Supply & Demand Zones
     sd = detect_sd_zone(entry)
     if sd and sd["side"] == "DEMAND" and trend15 == "BULLISH":
         out.append(result("S6 Supply & Demand", "BUY", "Demand zone active in bullish 15M structure", "MEDIUM"))
     elif sd and sd["side"] == "SUPPLY" and trend15 == "BEARISH":
         out.append(result("S6 Supply & Demand", "SELL", "Supply zone active in bearish 15M structure", "MEDIUM"))
     else:
-        out.append(result("S6 Supply & Demand", reason="Price not in optimal S/D zone"))
+        out.append(result("S6 Supply & Demand", reason="Price outside optimal S/D zones"))
 
     # S7 — Premium & Discount Equilibrium
     swing_hi, swing_lo = recent_levels(entry, pivot_n)
     eq = (swing_hi + swing_lo) / 2
     if px < eq and trend15 == "BULLISH":
-        out.append(result("S7 Premium/Discount", "BUY", "Price in Discount zone (below 50% equilibrium)", "MEDIUM"))
+        out.append(result("S7 Premium & Discount", "BUY", "Price in Discount zone (below 50%)", "MEDIUM"))
     elif px > eq and trend15 == "BEARISH":
-        out.append(result("S7 Premium/Discount", "SELL", "Price in Premium zone (above 50% equilibrium)", "MEDIUM"))
+        out.append(result("S7 Premium & Discount", "SELL", "Price in Premium zone (above 50%)", "MEDIUM"))
     else:
-        out.append(result("S7 Premium/Discount", reason="Waiting for discount/premium alignment"))
+        out.append(result("S7 Premium & Discount", reason="Waiting for equilibrium alignment"))
 
-    # Risk Levels for BTC
-    buffer = atr * 0.5
-    buy_stop = lo - buffer
-    sell_stop = hi + buffer
+    buy_stop = lo - (atr * 0.5)
+    sell_stop = hi + (atr * 0.5)
     buy_risk = px - buy_stop
     sell_risk = sell_stop - px
     
@@ -330,22 +333,22 @@ def analyze_btc(data: Dict[str, pd.DataFrame], pivot_n: int):
         "buy_votes": buy_votes, "sell_votes": sell_votes, "consensus": consensus,
         "buy_stop": buy_stop, "buy_target": buy_target,
         "sell_stop": sell_stop, "sell_target": sell_target,
-        "atr": atr, "support": lo, "resistance": hi
+        "support": lo, "resistance": hi
     }
 
 
-# --------------------------- UI & EXECUTION ---------------------------
+# --------------------------- STREAMLIT UI ---------------------------
 
-st.title("⚡ BRODAX | BTC SMC Signal Engine")
-st.caption("Twelve Data API Feed • Bitcoin (BTC/USD) Optimized • Paper Trading Terminal")
+st.title("⚡ BRODAX | BTC Price Lesson Terminal")
+st.caption("Twelve Data API Feed • Bitcoin (BTC/USD) • Rate-Limit Optimized")
 
 with st.sidebar:
-    st.header("⚙️ BRODAX Settings")
-    st.write("Target Asset: **BTC/USD**")
+    st.header("⚙️ BRODAX Controls")
+    st.write("Asset: **BTC/USD**")
     pivot_n = st.slider("Swing Lookback", 2, 6, DEFAULT_PIVOT_LOOKBACK)
     min_votes = st.slider("Min Strategy Confluence", 1, 5, DEFAULT_CONFLUENCE)
     paper_risk_pct = st.slider("Paper Risk per Trade (%)", 0.25, 2.0, 1.0, 0.25)
-    refresh_seconds = st.selectbox("Refresh Interval (sec)", [10, 15, 30, 60], index=1)
+    refresh_seconds = st.selectbox("Refresh Interval (sec)", [30, 60, 120], index=0)
 
 if AUTOREFRESH_AVAILABLE:
     st_autorefresh(interval=refresh_seconds * 1000, key="brodax_btc_refresh")
@@ -354,16 +357,20 @@ conn = db_connect()
 balance = load_balance(conn)
 
 try:
-    with st.spinner("Fetching live BTC data from Twelve Data & running SMC analysis..."):
-        market = {tf: get_twelve_klines(iv, 100) for tf, iv in INTERVALS.items()}
+    with st.spinner("Fetching BTC market data safely from Twelve Data..."):
+        # Fetch intervals one by one with built-in safety pauses
+        market = {}
+        for tf, iv in INTERVALS.items():
+            market[tf] = get_twelve_klines(iv, 80)
+            
         live_btc_price = get_twelve_price()
-        analysis = analyze_btc(market, pivot_n)
+        analysis = analyze_pricelesson_btc(market, pivot_n)
 except Exception as e:
-    st.error(f"Data Fetch Error: {e}")
-    st.warning("Please verify your `TWELVE_DATA_API_KEY` in Streamlit Cloud Secrets (`.streamlit/secrets.toml`).")
+    st.error(f"Data Fetch / Rate-Limit Error: {e}")
+    st.info("Tip: Twelve Data free tier allows limited requests per minute. Caching has been increased to prevent 429 errors.")
     st.stop()
 
-# Metrics Display
+# Top Metrics Bar
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("BTC/USD Live Ticker", f"${live_btc_price:,.2f}")
 m2.metric("15M Candle Close", f"${analysis['entry_price']:,.2f}")
@@ -371,14 +378,14 @@ m3.metric("15M Structure", analysis["trend15"])
 m4.metric("Consensus Bias", analysis["consensus"])
 
 st.divider()
-st.subheader("🎯 BRODAX Signal & Execution Plan")
+st.subheader("🎯 BRODAX Signal & Trade Plan")
 col_sig1, col_sig2 = st.columns([1, 2])
 
 with col_sig1:
     if analysis["consensus"] == "BUY":
-        st.success("🟢 BUY SIGNAL CONFIRMED")
+        st.success("🟢 BUY SIGNAL ACTIVE")
     elif analysis["consensus"] == "SELL":
-        st.error("🔴 SELL SIGNAL CONFIRMED")
+        st.error("🔴 SELL SIGNAL ACTIVE")
     else:
         st.warning("⏳ WAITING FOR CONFLUENCE")
     st.write(f"BUY Strategy Votes: **{analysis['buy_votes']}**")
@@ -386,25 +393,25 @@ with col_sig1:
 
 with col_sig2:
     if analysis["consensus"] == "BUY":
-        st.write(f"**Entry Price:** ${analysis['entry_price']:,.2f}")
+        st.write(f"**Entry:** ${analysis['entry_price']:,.2f}")
         st.write(f"**Stop Loss:** ${analysis['buy_stop']:,.2f}")
-        st.write(f"**Target (1:3):** ${analysis['buy_target']:,.2f}")
+        st.write(f"**Target (1:3 R:R):** ${analysis['buy_target']:,.2f}")
     elif analysis["consensus"] == "SELL":
-        st.write(f"**Entry Price:** ${analysis['entry_price']:,.2f}")
+        st.write(f"**Entry:** ${analysis['entry_price']:,.2f}")
         st.write(f"**Stop Loss:** ${analysis['sell_stop']:,.2f}")
-        st.write(f"**Target (1:3):** ${analysis['sell_target']:,.2f}")
+        st.write(f"**Target (1:3 R:R):** ${analysis['sell_target']:,.2f}")
     else:
-        st.info("Market structure is consolidating. Standing by for valid SMC setup.")
+        st.info("Standing by. Waiting for independent strategy families to agree.")
 
 st.divider()
-st.subheader("📚 SMC Strategy Breakdown")
+st.subheader("📚 Price Lesson Strategy Database")
 st.dataframe(pd.DataFrame(analysis["strategies"])[["strategy", "side", "confidence", "reason"]], use_container_width=True, hide_index=True)
 
 st.divider()
-st.subheader("🧪 BTC Paper Trading Terminal")
-st.write(f"**Account Balance:** ${balance:,.2f}")
+st.subheader("🧪 Paper Trading Simulator")
+st.write(f"**Paper Account Balance:** ${balance:,.2f}")
 
-if analysis["consensus"] in ("BUY", "SELL") and st.button("Execute Paper Trade"):
+if analysis["consensus"] in ("BUY", "SELL") and st.button("Execute Paper Trade", type="primary"):
     side = analysis["consensus"]
     entry = analysis["entry_price"]
     stop = analysis["buy_stop"] if side == "BUY" else analysis["sell_stop"]
@@ -416,15 +423,15 @@ if analysis["consensus"] in ("BUY", "SELL") and st.button("Execute Paper Trade")
     conn.execute("""
         INSERT INTO paper_trades(symbol, side, entry, stop, target, quantity, opened_at, status, signal_reason)
         VALUES(?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
-    """, ("BTC/USD", side, entry, stop, target, qty, datetime.now(timezone.utc).isoformat(), f"{side} Confluence Setup"))
+    """, ("BTC/USD", side, entry, stop, target, qty, datetime.now(timezone.utc).isoformat(), f"{side} Price Lesson Confluence"))
     conn.commit()
-    st.success("Paper trade executed successfully!")
+    st.success("Paper trade successfully opened!")
     st.rerun()
 
 open_trades = conn.execute("SELECT id, side, entry, stop, target, quantity, opened_at FROM paper_trades WHERE status='OPEN'").fetchall()
 if open_trades:
     st.dataframe(pd.DataFrame(open_trades, columns=["ID", "Side", "Entry", "Stop", "Target", "Qty", "Opened"]), use_container_width=True, hide_index=True)
 else:
-    st.info("No open paper trades.")
+    st.info("No active open paper trades.")
 
 conn.close()
